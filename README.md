@@ -9,7 +9,8 @@ Command-line tools for Proton's Lumo AI assistant, including `lumode`, a local c
 - **Coding-focused prompts** optimized for development tasks
 - **Multi-turn conversations** with conversation history
 - **Named sessions** saved locally under `~/.config/lumode/sessions`
-- **Polished slash commands** for context, tools, workspace navigation, and transcript export
+- **Auto/manual compaction** to keep long sessions usable
+- **Polished slash commands** for context, tools, workspace navigation, history, and transcript export
 - **Firefox authentication** - uses your existing Lumo session
 - **Custom system prompts** for different use cases
 - **Pipe-friendly** - works with stdin/stdout
@@ -50,6 +51,18 @@ Useful interactive commands:
 /search query         Search the web and add results as context
 /fetch https://...    Fetch URL text and add it as context
 /apply                Apply a unified diff from the last Lumo response
+/compact 8            Compact older history, keeping recent messages
+/auto-compact status  Show automatic compaction settings
+/auto-compact on 120000 8
+/status               Show session, context, and compaction status
+/history 10           Show recent chat history metadata
+/last notes.md        Write the last response to a file
+/drop 1               Drop one pending context item
+/drop all             Drop all pending context
+/note remember this   Add a note as context
+/prompt You are...    Replace the system prompt
+/read src/app.py      Print a file without adding context
+/ls . 2               Print a directory tree without adding context
 /sessions             List saved sessions
 /save bugfix          Save the current session
 /load bugfix          Load a saved session
@@ -59,6 +72,8 @@ Useful interactive commands:
 /export notes.md      Export transcript as Markdown
 /pwd                  Show the active workspace directory
 /cd ../other-repo      Change workspace directory
+/reset                Reset active session state and settings
+/version              Show Lumode version
 /clear                Clear chat history and pending context
 /quit                 Exit
 ```
@@ -74,9 +89,11 @@ Single-turn examples:
 ./lumode --apply --file bug.py "Return and apply a patch for this bug"
 ./lumode --session bugfix "Continue the previous fix"
 ./lumode --save-session review --file app.py "Review this file"
+./lumode --compact --session bugfix "Continue with compacted history"
+./lumode --no-auto-compact "Keep full history for this turn"
 ```
 
-Saved sessions contain chat history, pending context, last response, and the active workspace directory. They do not contain Lumo auth tokens.
+Saved sessions contain chat history, pending context, last response, the active workspace directory, system prompt, and compaction settings. They do not contain Lumo auth tokens.
 
 ### Interactive Mode
 

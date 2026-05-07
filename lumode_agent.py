@@ -27,6 +27,10 @@ DEFAULT_MAX_FILE_BYTES = 80_000
 DEFAULT_MAX_COMMAND_BYTES = 80_000
 DEFAULT_MAX_TOOL_ROUNDS = 8
 DEFAULT_MAX_SEARCH_BYTES = 30_000
+DEFAULT_AUTO_COMPACT_CHARS = 120_000
+DEFAULT_COMPACT_KEEP_MESSAGES = 8
+DEFAULT_COMPACT_SUMMARY_CHARS = 8_000
+LUMODE_VERSION = "0.2.0"
 SESSION_DIR = Path.home() / ".config" / "lumode" / "sessions"
 SESSION_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 
@@ -113,9 +117,11 @@ class _CmdCompleter(Completer):
         "/help", "/context", "/apply", "/clear", "/quit",
         "/sessions", "/save ", "/load ", "/new ", "/delete ", "/rename ",
         "/export ", "/pwd", "/cd ",
+        "/compact", "/auto-compact ", "/status", "/history ", "/last ",
+        "/drop ", "/note ", "/prompt ", "/reset", "/read ", "/ls ", "/version",
         "/add ", "/tree ", "/run ", "/search ", "/fetch ",
     ]
-    _PATH_PREFIXES = ("/add ", "/tree ", "/cd ", "/export ")
+    _PATH_PREFIXES = ("/add ", "/tree ", "/cd ", "/export ", "/last ", "/read ", "/ls ")
 
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
@@ -179,6 +185,9 @@ class LumodeAgent:
         self.context: list[ContextItem] = []
         self.last_response = ""
         self.session_name: Optional[str] = None
+        self.auto_compact = True
+        self.auto_compact_chars = int(os.getenv("LUMODE_AUTO_COMPACT_CHARS", DEFAULT_AUTO_COMPACT_CHARS))
+        self.compact_keep_messages = int(os.getenv("LUMODE_COMPACT_KEEP_MESSAGES", DEFAULT_COMPACT_KEEP_MESSAGES))
 
     # ── Public context helpers ────────────────────────────────────────────────
 
@@ -246,6 +255,9 @@ class LumodeAgent:
     def ask(self, message: str, debug: bool = False) -> str:
         full_message = self._build_message(message)
         self.history.append({"Role": "user", "Content": full_message})
+        compact_msg = self.maybe_auto_compact()
+        if compact_msg:
+            _print_info(compact_msg)
 
         for round_num in range(DEFAULT_MAX_TOOL_ROUNDS):
             msg_text, native_calls = self._stream_and_capture(streaming=(round_num == 0))
@@ -485,6 +497,15 @@ class LumodeAgent:
         self.context = []
         self.last_response = ""
 
+    def reset_all(self) -> str:
+        self.clear()
+        self.session_name = None
+        self.system_prompt = LUMODE_SYSTEM_PROMPT
+        self.auto_compact = True
+        self.auto_compact_chars = DEFAULT_AUTO_COMPACT_CHARS
+        self.compact_keep_messages = DEFAULT_COMPACT_KEEP_MESSAGES
+        return "Reset session, prompt, context, and compaction settings."
+
     def new_session(self, name: Optional[str] = None) -> str:
         self.clear()
         self.session_name = self._validate_session_name(name) if name else None
@@ -512,6 +533,12 @@ class LumodeAgent:
             "history": self.history,
             "context": [item.__dict__ for item in self.context],
             "last_response": self.last_response,
+            "system_prompt": self.system_prompt,
+            "settings": {
+                "auto_compact": self.auto_compact,
+                "auto_compact_chars": self.auto_compact_chars,
+                "compact_keep_messages": self.compact_keep_messages,
+            },
         }
         path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         self.session_name = session_name
@@ -536,6 +563,11 @@ class LumodeAgent:
             if isinstance(item, dict)
         ]
         self.last_response = str(data.get("last_response", ""))
+        self.system_prompt = str(data.get("system_prompt") or self.system_prompt)
+        settings = data.get("settings") if isinstance(data.get("settings"), dict) else {}
+        self.auto_compact = bool(settings.get("auto_compact", self.auto_compact))
+        self.auto_compact_chars = int(settings.get("auto_compact_chars", self.auto_compact_chars))
+        self.compact_keep_messages = int(settings.get("compact_keep_messages", self.compact_keep_messages))
         return f"Loaded session: {session_name}"
 
     def delete_session(self, name: str) -> str:
@@ -593,9 +625,129 @@ class LumodeAgent:
         if not self.context:
             return "No pending context."
         lines = ["Pending context:"]
-        for item in self.context:
-            lines.append(f"  - {item.label} ({len(item.content)} chars)")
+        for index, item in enumerate(self.context, start=1):
+            lines.append(f"  {index}. {item.label} ({len(item.content)} chars)")
         return "\n".join(lines)
+
+    def status(self) -> str:
+        session = self.session_name or "(unsaved)"
+        return "\n".join([
+            f"Session: {session}",
+            f"cwd: {self.cwd}",
+            f"History: {len(self.history)} messages, {self.history_chars()} chars",
+            f"Pending context: {len(self.context)} items, {sum(len(i.content) for i in self.context)} chars",
+            f"Last response: {len(self.last_response)} chars",
+            (
+                "Auto compact: "
+                f"{'on' if self.auto_compact else 'off'} "
+                f"(threshold {self.auto_compact_chars} chars, keep {self.compact_keep_messages} messages)"
+            ),
+        ])
+
+    def history_status(self, limit: int = 20) -> str:
+        if not self.history:
+            return "No chat history."
+        rows = []
+        start = max(0, len(self.history) - limit)
+        for index, item in enumerate(self.history[start:], start=start + 1):
+            role = item.get("Role", item.get("role", "unknown"))
+            content = str(item.get("Content", item.get("content", ""))).strip().replace("\n", " ")
+            if len(content) > 100:
+                content = content[:97] + "..."
+            rows.append(f"{index:>3}. {role:<9} {len(str(item.get('Content', ''))):>6} chars  {content}")
+        return "\n".join(rows)
+
+    def drop_context(self, target: str) -> str:
+        if target == "all":
+            count = len(self.context)
+            self.context = []
+            return f"Dropped {count} context items."
+        try:
+            index = int(target) - 1
+        except ValueError:
+            return "Usage: /drop <index|all>"
+        if index < 0 or index >= len(self.context):
+            return f"Context item not found: {target}"
+        item = self.context.pop(index)
+        return f"Dropped context: {item.label}"
+
+    def add_note(self, text: str) -> str:
+        if not text.strip():
+            return "Usage: /note <text>"
+        self.context.append(ContextItem("note", text.strip()))
+        return "Added note as context."
+
+    def write_last_response(self, path_text: str) -> str:
+        if not self.last_response:
+            return "No last response to write."
+        path = self._safe_path(path_text)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(self.last_response.rstrip() + "\n", encoding="utf-8")
+        return f"Wrote last response to {path}"
+
+    def set_system_prompt(self, prompt: str) -> str:
+        if not prompt.strip():
+            return self.system_prompt
+        self.system_prompt = prompt.strip()
+        return "Updated system prompt."
+
+    def configure_auto_compact(self, command: str) -> str:
+        parts = shlex.split(command)
+        if not parts or parts[0] == "status":
+            return (
+                f"Auto compact is {'on' if self.auto_compact else 'off'}; "
+                f"threshold={self.auto_compact_chars}; keep={self.compact_keep_messages}"
+            )
+        action = parts[0]
+        if action in {"on", "off"}:
+            self.auto_compact = action == "on"
+            parts = parts[1:]
+        if parts:
+            self.auto_compact_chars = max(10_000, int(parts[0]))
+        if len(parts) > 1:
+            self.compact_keep_messages = max(2, int(parts[1]))
+        return (
+            f"Auto compact {'enabled' if self.auto_compact else 'disabled'} "
+            f"(threshold {self.auto_compact_chars} chars, keep {self.compact_keep_messages} messages)."
+        )
+
+    def history_chars(self) -> int:
+        return sum(len(str(item.get("Content", item.get("content", "")))) for item in self.history)
+
+    def maybe_auto_compact(self) -> Optional[str]:
+        if not self.auto_compact or self.history_chars() <= self.auto_compact_chars:
+            return None
+        return self.compact_history(
+            keep_messages=self.compact_keep_messages,
+            reason=f"auto compact at {self.history_chars()} chars",
+        )
+
+    def compact_history(
+        self,
+        keep_messages: Optional[int] = None,
+        max_summary_chars: int = DEFAULT_COMPACT_SUMMARY_CHARS,
+        reason: str = "manual compact",
+    ) -> str:
+        keep = max(2, keep_messages or self.compact_keep_messages)
+        if len(self.history) <= keep:
+            return "Nothing to compact."
+
+        old = self.history[:-keep]
+        recent = self.history[-keep:]
+        before = self.history_chars()
+        summary = self._summarize_history(old, max_summary_chars=max_summary_chars)
+        self.history = [{
+            "Role": "system",
+            "Content": (
+                f"Lumode conversation compacted ({reason}). "
+                "Older turns are summarized below; preserve these facts when continuing.\n\n"
+                + summary
+            ),
+        }] + recent
+        after = self.history_chars()
+        if self.session_name:
+            self.save_session(self.session_name)
+        return f"Compacted history: {before} -> {after} chars; kept {len(recent)} recent messages."
 
     # ── Private helpers ───────────────────────────────────────────────────────
 
@@ -650,6 +802,24 @@ class LumodeAgent:
             for item in self.context:
                 lines.extend([f"### {item.label}", "", "```text", item.content, "```", ""])
         return "\n".join(lines).rstrip() + "\n"
+
+    def _summarize_history(self, items: list[dict[str, str]], max_summary_chars: int) -> str:
+        lines = [
+            f"Summary generated locally at {dt.datetime.now(dt.timezone.utc).isoformat()}.",
+            f"Compacted {len(items)} older messages.",
+            "",
+        ]
+        for index, item in enumerate(items, start=1):
+            role = item.get("Role", item.get("role", "unknown"))
+            content = str(item.get("Content", item.get("content", ""))).strip()
+            content = re.sub(r"\n{3,}", "\n\n", content)
+            if len(content) > 700:
+                content = content[:700].rstrip() + "\n[message truncated in compacted summary]"
+            lines.extend([f"Turn {index} ({role}, {len(content)} chars):", content, ""])
+            if len("\n".join(lines)) >= max_summary_chars:
+                lines.append("[summary truncated]")
+                break
+        return "\n".join(lines).strip()
 
     def _tree(self, path: Path, max_depth: int, depth: int = 0, prefix: str = "") -> str:
         if depth > max_depth:
@@ -778,6 +948,16 @@ def print_help() -> None:
             ("/fetch <url>", "Fetch URL text as context"),
             ("/context", "Show pending context items"),
             ("/apply", "Apply unified diff from last response"),
+            ("/compact [keep]", "Compact older chat history into a summary"),
+            ("/auto-compact [on|off|status] [chars] [keep]", "Configure automatic history compaction"),
+            ("/status", "Show session, context, and compaction status"),
+            ("/history [n]", "Show recent chat history metadata"),
+            ("/last [path]", "Show or write the last response"),
+            ("/drop <index|all>", "Drop pending context"),
+            ("/note <text>", "Add a note as context"),
+            ("/prompt [text]", "Show or replace the system prompt"),
+            ("/read <path>", "Print a file without adding context"),
+            ("/ls [path] [depth]", "Print a directory tree without adding context"),
             ("/sessions", "List saved sessions"),
             ("/save [name]", "Save the current chat session"),
             ("/load <name>", "Load a saved chat session"),
@@ -787,6 +967,8 @@ def print_help() -> None:
             ("/export [path]", "Export the session transcript as Markdown"),
             ("/pwd", "Show current workspace directory"),
             ("/cd <path>", "Change workspace directory"),
+            ("/reset", "Reset active session state and settings"),
+            ("/version", "Show Lumode version"),
             ("/clear", "Clear chat history and pending context"),
             ("/quit", "Exit"),
         ]
@@ -803,6 +985,16 @@ def print_help() -> None:
   /fetch <url>          Fetch URL text and add it as context
   /context              Show pending context
   /apply                Apply unified diff from the last Lumo response
+  /compact [keep]       Compact older chat history into a summary
+  /auto-compact ...     Configure automatic compaction
+  /status               Show session, context, and compaction status
+  /history [n]          Show recent chat history metadata
+  /last [path]          Show or write the last response
+  /drop <index|all>     Drop pending context
+  /note <text>          Add a note as context
+  /prompt [text]        Show or replace the system prompt
+  /read <path>          Print a file without adding context
+  /ls [path] [depth]    Print a directory tree without adding context
   /sessions             List saved sessions
   /save [name]          Save the current chat session
   /load <name>          Load a saved chat session
@@ -812,6 +1004,8 @@ def print_help() -> None:
   /export [path]        Export the session transcript as Markdown
   /pwd                  Show current workspace directory
   /cd <path>            Change workspace directory
+  /reset                Reset active session state and settings
+  /version              Show Lumode version
   /clear                Clear chat history and pending context
   /quit                 Exit
 
@@ -819,6 +1013,9 @@ Examples:
   /tree . 2
   /add src/app.py
   /run pytest -q
+  /status
+  /compact 8
+  /auto-compact on 120000 8
   /save bugfix-notes
   /load bugfix-notes
   /search latest Python release
@@ -955,14 +1152,81 @@ def interactive(agent: LumodeAgent, debug: bool = False) -> None:
         if raw == "/context":
             _print_info(agent.context_status())
             continue
+        if raw == "/status":
+            _print_info(agent.status())
+            continue
+        if raw == "/version":
+            _print_info(f"Lumode {LUMODE_VERSION}")
+            continue
+        if raw.startswith("/history"):
+            parts = shlex.split(raw)
+            try:
+                limit = int(parts[1]) if len(parts) > 1 else 20
+                _print_info(agent.history_status(limit))
+            except ValueError as exc:
+                _print_error(str(exc))
+            continue
+        if raw.startswith("/compact"):
+            parts = shlex.split(raw)
+            try:
+                keep = int(parts[1]) if len(parts) > 1 else None
+                _print_ok(agent.compact_history(keep_messages=keep))
+            except ValueError as exc:
+                _print_error(str(exc))
+            continue
+        if raw.startswith("/auto-compact"):
+            try:
+                _print_info(agent.configure_auto_compact(raw[len("/auto-compact"):].strip()))
+            except ValueError as exc:
+                _print_error(str(exc))
+            continue
+        if raw.startswith("/last"):
+            parts = shlex.split(raw)
+            if len(parts) > 1:
+                try:
+                    _print_ok(agent.write_last_response(parts[1]))
+                except OSError as exc:
+                    _print_error(str(exc))
+            elif agent.last_response:
+                agent._render_response(agent.last_response)
+            else:
+                _print_info("No last response.")
+            continue
+        if raw.startswith("/drop "):
+            _print_info(agent.drop_context(raw[6:].strip()))
+            continue
+        if raw.startswith("/note "):
+            _print_ok(agent.add_note(raw[6:].strip()))
+            continue
+        if raw.startswith("/prompt"):
+            msg = agent.set_system_prompt(raw[len("/prompt"):].strip())
+            (_print_ok if msg == "Updated system prompt." else _print_info)(msg)
+            continue
+        if raw.startswith("/read "):
+            _print_info(agent.read_file_tool(raw[6:].strip()))
+            continue
+        if raw.startswith("/ls"):
+            try:
+                parts = shlex.split(raw)
+                path = parts[1] if len(parts) > 1 else "."
+                depth = int(parts[2]) if len(parts) > 2 else 2
+                _print_info(agent.list_tree_tool(path, depth))
+            except ValueError as exc:
+                _print_error(str(exc))
+            continue
         if raw == "/sessions":
             _print_sessions(agent)
             continue
         if raw == "/pwd":
             _print_info(str(agent.cwd))
             continue
+        if raw == "/reset":
+            _print_ok(agent.reset_all())
+            continue
         if raw == "/clear":
             agent.clear()
+            if agent.session_name:
+                agent.save_session(agent.session_name)
             _print_ok("Cleared history and context.")
             continue
         if raw == "/apply":
@@ -1097,6 +1361,7 @@ def main() -> None:
   lumode --search "latest Python release" "Summarize this"
   lumode --apply --file bug.py "Return a unified diff for the bug"
   lumode --session bugfix "Continue where we left off"
+  lumode --compact --session bugfix "Continue with compacted history"
 """,
     )
     parser.add_argument("message", nargs="?", help="Message to send")
@@ -1111,6 +1376,10 @@ def main() -> None:
     parser.add_argument("--apply", action="store_true", help="Apply unified diff from response")
     parser.add_argument("--session", help="Load a saved session before running")
     parser.add_argument("--save-session", help="Save the conversation under this session name")
+    parser.add_argument("--compact", action="store_true", help="Compact loaded history before sending")
+    parser.add_argument("--compact-keep", type=int, help="Recent message count to keep when compacting")
+    parser.add_argument("--no-auto-compact", action="store_true", help="Disable automatic history compaction")
+    parser.add_argument("--auto-compact-chars", type=int, help="History char threshold for automatic compaction")
     parser.add_argument("--debug", action="store_true", help="Print raw responses and tool results")
 
     args = parser.parse_args()
@@ -1125,6 +1394,14 @@ def main() -> None:
             (_print_ok if msg.startswith("Loaded") else _print_info)(msg)
         if args.save_session:
             agent.session_name = LumodeAgent._validate_session_name(args.save_session)
+        if args.no_auto_compact:
+            agent.auto_compact = False
+        if args.auto_compact_chars:
+            agent.auto_compact_chars = args.auto_compact_chars
+        if args.compact_keep:
+            agent.compact_keep_messages = args.compact_keep
+        if args.compact:
+            _print_ok(agent.compact_history(keep_messages=args.compact_keep))
         if args.file:
             for file_path in args.file:
                 _print_ok(agent.add_path(file_path))
