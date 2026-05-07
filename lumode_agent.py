@@ -111,6 +111,11 @@ try:
     _PT = True
 except ImportError:
     _PT = False
+    from contextlib import contextmanager as _cm
+
+    @_cm
+    def pt_patch_stdout(raw: bool = False):  # type: ignore[misc]
+        yield
 
 
 # ── System prompt ─────────────────────────────────────────────────────────────
@@ -1177,6 +1182,81 @@ def _print_status(agent: LumodeAgent) -> None:
     _console.print(Panel(table, title="[bold]Status[/bold]", border_style="dim", padding=(1, 2)))
 
 
+def _print_welcome(agent: LumodeAgent) -> None:
+    if not _RICH:
+        print(f"Lumode v{LUMODE_VERSION}  Lumo-powered coding agent")
+        print(f"cwd: {agent.cwd}")
+        print("Type /help for commands.\n")
+        return
+
+    # ── ASCII Lumo cat ────────────────────────────────────────────────────────
+    cat = Text(justify="center")
+    cat.append("    /\\_____/\\\n", style="cyan")
+    cat.append("   ( ◉     ◉ )\n", style="cyan")
+    cat.append("    \\   ⚡   /\n", style="cyan")
+    cat.append("     \\_____/\n", style="cyan")
+
+    # ── Left column ───────────────────────────────────────────────────────────
+    cwd_str = str(agent.cwd)
+    if len(cwd_str) > 32:
+        cwd_str = "…" + cwd_str[-31:]
+    branch = _get_git_branch(agent.cwd)
+    session_name = agent.session_name or "(unsaved)"
+
+    left = Text()
+    left.append_text(cat)
+    left.append("\n")
+    left.append("  Lumo-powered coding agent\n", style="dim")
+    left.append(f"  v{LUMODE_VERSION}\n\n", style="bold")
+    left.append(f"  {cwd_str}\n", style="dim")
+    if branch:
+        left.append(f"  branch: {branch}\n", style="cyan dim")
+    left.append(f"  session: {session_name}\n", style="dim")
+
+    # ── Right column: commands + keys ─────────────────────────────────────────
+    right = Table.grid(padding=(0, 2))
+    right.add_column(style="cyan", no_wrap=True, width=14)
+    right.add_column(style="dim")
+
+    right.add_row(Text("Commands", style="bold"), Text(""))
+    right.add_row(Text("─" * 13, style="dim"), Text("─" * 24, style="dim"))
+    for cmd, desc in [
+        ("/add <path>", "Add file/dir as context"),
+        ("/tree", "Add directory tree"),
+        ("/run <cmd>", "Run shell → context"),
+        ("/search <q>", "Web search → context"),
+        ("/compact", "Compact history"),
+        ("/help", "All commands"),
+    ]:
+        right.add_row(cmd, desc)
+
+    right.add_row("", "")
+    right.add_row(Text("Keys", style="bold"), Text(""))
+    right.add_row(Text("─" * 13, style="dim"), Text("─" * 24, style="dim"))
+    for key, desc in [
+        ("Tab", "Complete slash commands"),
+        ("Alt+Enter", "Insert newline"),
+        ("↑↓", "Browse history"),
+        ("Ctrl-D", "Exit"),
+    ]:
+        right.add_row(Text(key, style="cyan"), Text(desc, style="dim"))
+
+    # ── Two-column panel ──────────────────────────────────────────────────────
+    grid = Table.grid(padding=(0, 4))
+    grid.add_column(width=34)
+    grid.add_column()
+    grid.add_row(left, right)
+
+    _console.print()
+    _console.print(Panel(
+        grid,
+        title=f"[bold cyan]Lumode[/bold cyan] [dim]v{LUMODE_VERSION}[/dim]",
+        border_style="cyan",
+        padding=(1, 2),
+    ))
+    _console.print()
+
+
 # ── Interactive REPL ──────────────────────────────────────────────────────────
 
 def _make_session(
@@ -1236,26 +1316,8 @@ def _make_session(
 
 
 def interactive(agent: LumodeAgent, debug: bool = False) -> None:
-    # ── Header ────────────────────────────────────────────────────────────────
-    if _RICH:
-        branch = _get_git_branch(agent.cwd)
-        branch_info = f"  [dim]branch:[/dim] [bold cyan]{branch}[/bold cyan]" if branch else ""
-        _console.print()
-        _console.print(
-            Rule(
-                f"[bold cyan]Lumode[/bold cyan] [dim]v{LUMODE_VERSION}[/dim]  [dim]Lumo-powered coding agent[/dim]",
-                style="dim",
-            )
-        )
-        _console.print(f"  [dim]cwd:[/dim] [bold]{agent.cwd}[/bold]{branch_info}")
-        _console.print(
-            "  [dim]Tab: complete  ↑↓: history  Alt+Enter: newline  Ctrl-D: exit[/dim]"
-        )
-        _console.print()
-    else:
-        print(f"{Colors.BOLD}Lumode{Colors.RESET} {Colors.DIM}Lumo-powered coding agent{Colors.RESET}")
-        print(f"{Colors.DIM}cwd: {agent.cwd}{Colors.RESET}")
-        print(f"{Colors.DIM}Type /help for commands.{Colors.RESET}\n")
+    # ── Welcome panel ─────────────────────────────────────────────────────────
+    _print_welcome(agent)
 
     # ── Input setup ───────────────────────────────────────────────────────────
     ai_thinking = threading.Event()
@@ -1267,13 +1329,11 @@ def interactive(agent: LumodeAgent, debug: bool = False) -> None:
             ctx_hint = f"<ansicyan><b>+{len(agent.context)}</b></ansicyan> " if agent.context else ""
             if queue_mode:
                 prompt_str = HTML('<ansiyellow><b>↳</b></ansiyellow> <dim>queue</dim> <ansiblue>❯</ansiblue> ')
-                with pt_patch_stdout():
-                    return session.prompt(prompt_str).strip()
             else:
                 prompt_str = HTML(
                     f'<ansigreen><b>lumode{session_label}</b></ansigreen> {ctx_hint}<ansiblue>❯</ansiblue> '
                 )
-                return session.prompt(prompt_str).strip()
+            return session.prompt(prompt_str).strip()
         session_label = f" [{agent.session_name}]" if agent.session_name else ""
         return input(f"{Colors.GREEN}lumode{session_label}>{Colors.RESET} ").strip()
 
@@ -1489,18 +1549,18 @@ def interactive(agent: LumodeAgent, debug: bool = False) -> None:
 
         threading.Thread(target=_do_ask, daemon=True).start()
 
-        # Accept the next message while AI processes (patch_stdout keeps output
-        # above the prompt line so streaming text and the queue prompt coexist)
-        try:
-            nxt = get_input(queue_mode=True)
-            if nxt:
-                pending_msg = nxt
-        except (EOFError, KeyboardInterrupt):
+        # patch_stdout(raw=True): AI's ANSI colour codes pass through unescaped
+        # and appear correctly above the queue prompt line.
+        with pt_patch_stdout(raw=True):
+            try:
+                nxt = get_input(queue_mode=True)
+                if nxt:
+                    pending_msg = nxt
+            except (EOFError, KeyboardInterrupt):
+                done.wait()
+                print()
+                return
             done.wait()
-            print()
-            return
-
-        done.wait()
 
         if errors:
             _print_error(str(errors[0]))
