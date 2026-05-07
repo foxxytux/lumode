@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import base64
 import datetime as dt
-import fcntl
 import html
 import json
 import os
@@ -14,7 +13,6 @@ import re
 import shlex
 import subprocess
 import sys
-import termios
 import threading
 import time
 import urllib.parse
@@ -1199,28 +1197,6 @@ def _supports_inline_image() -> bool:
     return "kitty" in term or term_program in {"kitty", "ghostty", "wezterm"}
 
 
-def _terminal_cell_ratio(output) -> float:
-    try:
-        packed = fcntl.ioctl(output.fileno(), termios.TIOCGWINSZ, b"\0" * 8)
-        rows, cols, xpx, ypx = int.from_bytes(packed[0:2], "little"), int.from_bytes(packed[2:4], "little"), int.from_bytes(packed[4:6], "little"), int.from_bytes(packed[6:8], "little")
-        if rows and cols and xpx and ypx:
-            return (xpx / cols) / (ypx / rows)
-    except OSError:
-        pass
-    return 0.5
-
-
-def _png_size(path: Path) -> tuple[int, int]:
-    try:
-        with path.open("rb") as image:
-            header = image.read(24)
-        if header.startswith(b"\x89PNG\r\n\x1a\n") and header[12:16] == b"IHDR":
-            return int.from_bytes(header[16:20], "big"), int.from_bytes(header[20:24], "big")
-    except OSError:
-        pass
-    return 1, 1
-
-
 def _kitty_image_escape(width: int, height: Optional[int] = None) -> str:
     path_payload = base64.b64encode(str(LUMO_CAT_IMAGE).encode("utf-8")).decode("ascii")
     height_arg = f",r={height}" if height else ""
@@ -1245,19 +1221,14 @@ def _print_inline_image_welcome(agent: LumodeAgent) -> bool:
     left_width = 28
     gap = 4
     right_width = outer_width - left_width - gap
-    image_width, image_height = _png_size(LUMO_CAT_IMAGE)
     image_cols = 16
-    image_rows = max(1, round(image_cols * (image_height / image_width) * _terminal_cell_ratio(output)))
-    image_rows = min(10, max(6, image_rows))
 
     cwd_str, branch, session_name = _plain_welcome_context(agent)
     left_lines: list[str] = []
     image_indent = 2
     image_pad = " " * image_indent
-    left_lines.append(image_pad + _kitty_image_escape(image_cols, image_rows))
-    left_lines.extend(" " * left_width for _ in range(max(0, image_rows - 1)))
+    left_lines.append(image_pad + _kitty_image_escape(image_cols))
     left_lines.extend([
-        "",
         "  Lumo-powered coding agent",
         f"  v{LUMODE_VERSION}",
         "",
@@ -1332,37 +1303,16 @@ def _print_welcome(agent: LumodeAgent) -> None:
         return
 
     # ── Lumo cat fallback art ─────────────────────────────────────────────────
-    P  = "#7c3aed"   # Lumo purple
-    LP = "#8b5cf6"   # highlight purple
-    DP = "#4c1d95"   # darker purple (outline / shadow)
-    B  = "#f59e0b"   # orange coin
+    P = "#7c3aed"
 
     left = Text()
 
     def la(s, st=P):
         left.append(s, style=st)
 
-    la("      /\\_/\\\n", LP)
-    la("   __/     \\__\n", LP)
-    la("  /  ")
-    la("◉", "white bold")
-    la("   ")
-    la("◉", "white bold")
-    la("  \\\n", LP)
-    la(" |     ")
-    la("▾", "#d8b4fe")
-    la("     |\n", LP)
-    la("  \\    ")
-    la("●", B)
-    la("    /\n", P)
-    la("   /|       |\\\n", P)
-    la("  / |       | \\___\n", P)
-    la(" |  |       |     `\\\n", P)
-    la(" |  |       |  /\\   |\n", P)
-    la(" |  |_______| |  |  |\n", DP)
-    la("  \\_________/ /  / /\n", DP)
-    la("    ||   ||  /__/ /\n", DP)
-    la("    ()   ()  `---'\n", DP)
+    la("  /\\_/\\\n")
+    la(" ( o.o )\n", "white bold")
+    la("  > ^ <\n")
 
     # ── Identity ──────────────────────────────────────────────────────────────
     cwd_str, branch, session_name = _plain_welcome_context(agent)
