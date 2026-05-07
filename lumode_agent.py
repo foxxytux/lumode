@@ -12,6 +12,7 @@ import re
 import shlex
 import subprocess
 import sys
+import threading
 import time
 import urllib.parse
 from dataclasses import dataclass
@@ -411,7 +412,13 @@ class LumodeAgent:
                         got_any = True
                     current_call = {}
 
-        if _RICH and streaming:
+        in_bg = threading.current_thread() is not threading.main_thread()
+        if in_bg:
+            # Running in background queue thread — avoid cursor tricks that
+            # would corrupt the prompt_toolkit queue input below.
+            for _ in _iter():
+                pass
+        elif _RICH and streaming:
             with Live(
                 Spinner("dots", " [dim]Thinking…[/dim]"),
                 console=_console,
@@ -1171,7 +1178,10 @@ def _print_status(agent: LumodeAgent) -> None:
 
 # ── Interactive REPL ──────────────────────────────────────────────────────────
 
-def _make_session(agent: "LumodeAgent") -> "Optional[PromptSession]":
+def _make_session(
+    agent: "LumodeAgent",
+    ai_thinking: "Optional[threading.Event]" = None,
+) -> "Optional[PromptSession]":
     """Build a prompt_toolkit PromptSession with history, completion, and status toolbar."""
     if not _PT:
         return None
@@ -1196,11 +1206,15 @@ def _make_session(agent: "LumodeAgent") -> "Optional[PromptSession]":
             chars = agent.history_chars()
             chars_str = f"{chars // 1000}k" if chars >= 1000 else str(chars)
             ctx_part = f"  ctx:<b>{ctx}</b>" if ctx else ""
+            if ai_thinking and ai_thinking.is_set():
+                state = "  <ansiyellow><b>⟳ thinking…</b></ansiyellow>"
+            else:
+                state = f"  <b>Tab</b>:complete  <b>↑↓</b>:history  <b>Alt+↵</b>:newline"
             return HTML(
                 f"  <b>{name}</b>"
                 f"  hist:<b>{hist}</b>/{chars_str}c"
                 f"{ctx_part}"
-                f"  <b>Tab</b>:complete  <b>↑↓</b>:history  <b>Alt+↵</b>:newline"
+                f"{state}"
             )
         except Exception:
             return ""
@@ -1243,25 +1257,34 @@ def interactive(agent: LumodeAgent, debug: bool = False) -> None:
         print(f"{Colors.DIM}Type /help for commands.{Colors.RESET}\n")
 
     # ── Input setup ───────────────────────────────────────────────────────────
-    session = _make_session(agent)
+    ai_thinking = threading.Event()
+    session = _make_session(agent, ai_thinking)
 
-    def get_input() -> str:
+    def get_input(queue_mode: bool = False) -> str:
         if session is not None:
             session_label = f" [{agent.session_name}]" if agent.session_name else ""
             ctx_hint = f"<ansicyan><b>+{len(agent.context)}</b></ansicyan> " if agent.context else ""
-            return session.prompt(
-                HTML(f'<ansigreen><b>lumode{session_label}</b></ansigreen> {ctx_hint}<ansiblue>❯</ansiblue> ')
-            ).strip()
+            if queue_mode:
+                prompt_str = HTML('<ansiyellow><b>↳</b></ansiyellow> <dim>queue</dim> <ansiblue>❯</ansiblue> ')
+            else:
+                prompt_str = HTML(
+                    f'<ansigreen><b>lumode{session_label}</b></ansigreen> {ctx_hint}<ansiblue>❯</ansiblue> '
+                )
+            return session.prompt(prompt_str, patch_stdout=queue_mode).strip()
         session_label = f" [{agent.session_name}]" if agent.session_name else ""
         return input(f"{Colors.GREEN}lumode{session_label}>{Colors.RESET} ").strip()
 
     # ── Main loop ─────────────────────────────────────────────────────────────
+    pending_msg: Optional[str] = None
     while True:
-        try:
-            raw = get_input()
-        except (EOFError, KeyboardInterrupt):
-            print()
-            return
+        if pending_msg is not None:
+            raw, pending_msg = pending_msg, None
+        else:
+            try:
+                raw = get_input()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                return
 
         if not raw:
             continue
@@ -1447,11 +1470,38 @@ def interactive(agent: LumodeAgent, debug: bool = False) -> None:
             _print_info("Unknown command. Type /help for commands.")
             continue
 
+        # ── Send to AI — run in background so user can queue the next message ──
+        ai_thinking.set()
+        done = threading.Event()
+        errors: list = []
+
+        def _do_ask(_raw=raw):
+            try:
+                agent.ask(_raw, debug=debug)
+            except RuntimeError as exc:
+                errors.append(exc)
+            finally:
+                ai_thinking.clear()
+                done.set()
+
+        threading.Thread(target=_do_ask, daemon=True).start()
+
+        # Accept the next message while AI processes (patch_stdout keeps output
+        # above the prompt line so streaming text and the queue prompt coexist)
         try:
-            agent.ask(raw, debug=debug)
-        except RuntimeError as exc:
-            _print_error(str(exc))
-            if agent.history and agent.history[-1]["Role"] == "user":
+            nxt = get_input(queue_mode=True)
+            if nxt:
+                pending_msg = nxt
+        except (EOFError, KeyboardInterrupt):
+            done.wait()
+            print()
+            return
+
+        done.wait()
+
+        if errors:
+            _print_error(str(errors[0]))
+            if agent.history and agent.history[-1].get("Role") == "user":
                 agent.history.pop()
 
 
