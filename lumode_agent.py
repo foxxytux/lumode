@@ -1200,7 +1200,7 @@ def _supports_inline_image() -> bool:
 def _kitty_image_escape(width: int, height: Optional[int] = None) -> str:
     path_payload = base64.b64encode(str(LUMO_CAT_IMAGE).encode("utf-8")).decode("ascii")
     height_arg = f",r={height}" if height else ""
-    return f"\033_Ga=T,f=100,t=f,c={width}{height_arg};{path_payload}\033\\"
+    return f"\033_Ga=T,f=100,t=f,c={width}{height_arg},C=1,q=2;{path_payload}\033\\"
 
 
 def _plain_welcome_context(agent: LumodeAgent) -> tuple[str, Optional[str], str]:
