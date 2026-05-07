@@ -1221,9 +1221,10 @@ def _png_size(path: Path) -> tuple[int, int]:
     return 1, 1
 
 
-def _kitty_image_escape(width: int) -> str:
+def _kitty_image_escape(width: int, height: Optional[int] = None) -> str:
     path_payload = base64.b64encode(str(LUMO_CAT_IMAGE).encode("utf-8")).decode("ascii")
-    return f"\033_Ga=T,f=100,t=f,c={width};{path_payload}\033\\"
+    height_arg = f",r={height}" if height else ""
+    return f"\033_Ga=T,f=100,t=f,c={width}{height_arg};{path_payload}\033\\"
 
 
 def _plain_welcome_context(agent: LumodeAgent) -> tuple[str, Optional[str], str]:
@@ -1240,19 +1241,24 @@ def _print_inline_image_welcome(agent: LumodeAgent) -> bool:
     if not getattr(output, "isatty", lambda: False)():
         return False
 
-    outer_width = min(132, max(78, _console.width - 2))
-    left_width = 35
-    gap = 3
+    outer_width = min(108, max(78, _console.width - 4))
+    left_width = 28
+    gap = 4
     right_width = outer_width - left_width - gap
     image_width, image_height = _png_size(LUMO_CAT_IMAGE)
-    image_cols = 18
+    image_cols = 16
     image_rows = max(1, round(image_cols * (image_height / image_width) * _terminal_cell_ratio(output)))
+    image_rows = min(10, max(6, image_rows))
 
     cwd_str, branch, session_name = _plain_welcome_context(agent)
     left_lines: list[str] = []
-    image_pad = " " * 3
-    left_lines.append(image_pad + _kitty_image_escape(image_cols))
-    left_lines.extend((" " * left_width) for _ in range(max(0, image_rows - 1)))
+    box_inner = image_cols + 2
+    box_indent = 2
+    image_pad = " " * box_indent
+    left_lines.append(f"{' ' * box_indent}╭{'─' * box_inner}╮")
+    left_lines.append(f"{' ' * box_indent}│ {_kitty_image_escape(image_cols, image_rows)} │")
+    left_lines.extend(f"{' ' * box_indent}│ {' ' * image_cols} │" for _ in range(max(0, image_rows - 1)))
+    left_lines.append(f"{' ' * box_indent}╰{'─' * box_inner}╯")
     left_lines.extend([
         "",
         "  Lumo-powered coding agent",
@@ -1298,7 +1304,7 @@ def _print_inline_image_welcome(agent: LumodeAgent) -> bool:
         left = left_lines[index] if index < len(left_lines) else ""
         right = right_lines[index] if index < len(right_lines) else ""
         if "\033_G" in left:
-            visible_left = len(image_pad) + image_cols
+            visible_left = len(image_pad) + box_inner + 2
             left_cell = f"{dim}{left}{' ' * max(0, left_width - visible_left)}{reset}"
         else:
             left_cell = f"{dim}{left:<{left_width}}{reset}"
