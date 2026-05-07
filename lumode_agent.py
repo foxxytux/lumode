@@ -1252,13 +1252,10 @@ def _print_inline_image_welcome(agent: LumodeAgent) -> bool:
 
     cwd_str, branch, session_name = _plain_welcome_context(agent)
     left_lines: list[str] = []
-    box_inner = image_cols + 2
-    box_indent = 2
-    image_pad = " " * box_indent
-    left_lines.append(f"{' ' * box_indent}╭{'─' * box_inner}╮")
-    left_lines.append(f"{' ' * box_indent}│ {_kitty_image_escape(image_cols, image_rows)} │")
-    left_lines.extend(f"{' ' * box_indent}│ {' ' * image_cols} │" for _ in range(max(0, image_rows - 1)))
-    left_lines.append(f"{' ' * box_indent}╰{'─' * box_inner}╯")
+    image_indent = 2
+    image_pad = " " * image_indent
+    left_lines.append(image_pad + _kitty_image_escape(image_cols, image_rows))
+    left_lines.extend(" " * left_width for _ in range(max(0, image_rows - 1)))
     left_lines.extend([
         "",
         "  Lumo-powered coding agent",
@@ -1304,7 +1301,7 @@ def _print_inline_image_welcome(agent: LumodeAgent) -> bool:
         left = left_lines[index] if index < len(left_lines) else ""
         right = right_lines[index] if index < len(right_lines) else ""
         if "\033_G" in left:
-            visible_left = len(image_pad) + box_inner + 2
+            visible_left = len(image_pad) + image_cols
             left_cell = f"{dim}{left}{' ' * max(0, left_width - visible_left)}{reset}"
         else:
             left_cell = f"{dim}{left:<{left_width}}{reset}"
