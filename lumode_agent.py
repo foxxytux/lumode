@@ -105,6 +105,7 @@ try:
     from prompt_toolkit.formatted_text import HTML
     from prompt_toolkit.history import FileHistory
     from prompt_toolkit.key_binding import KeyBindings
+    from prompt_toolkit.patch_stdout import patch_stdout as pt_patch_stdout
     from prompt_toolkit.styles import Style as PTStyle
 
     _PT = True
@@ -1266,11 +1267,13 @@ def interactive(agent: LumodeAgent, debug: bool = False) -> None:
             ctx_hint = f"<ansicyan><b>+{len(agent.context)}</b></ansicyan> " if agent.context else ""
             if queue_mode:
                 prompt_str = HTML('<ansiyellow><b>↳</b></ansiyellow> <dim>queue</dim> <ansiblue>❯</ansiblue> ')
+                with pt_patch_stdout():
+                    return session.prompt(prompt_str).strip()
             else:
                 prompt_str = HTML(
                     f'<ansigreen><b>lumode{session_label}</b></ansigreen> {ctx_hint}<ansiblue>❯</ansiblue> '
                 )
-            return session.prompt(prompt_str, patch_stdout=queue_mode).strip()
+                return session.prompt(prompt_str).strip()
         session_label = f" [{agent.session_name}]" if agent.session_name else ""
         return input(f"{Colors.GREEN}lumode{session_label}>{Colors.RESET} ").strip()
 
