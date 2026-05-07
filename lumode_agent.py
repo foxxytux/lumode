@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import base64
 import datetime as dt
+import fcntl
 import html
 import json
 import os
@@ -13,6 +14,7 @@ import re
 import shlex
 import subprocess
 import sys
+import termios
 import threading
 import time
 import urllib.parse
@@ -1197,7 +1199,29 @@ def _supports_inline_image() -> bool:
     return "kitty" in term or term_program in {"kitty", "ghostty", "wezterm"}
 
 
-def _print_lumo_cat_image(width: int = 18, height: int = 18) -> bool:
+def _terminal_cell_ratio(output) -> float:
+    try:
+        packed = fcntl.ioctl(output.fileno(), termios.TIOCGWINSZ, b"\0" * 8)
+        rows, cols, xpx, ypx = int.from_bytes(packed[0:2], "little"), int.from_bytes(packed[2:4], "little"), int.from_bytes(packed[4:6], "little"), int.from_bytes(packed[6:8], "little")
+        if rows and cols and xpx and ypx:
+            return (xpx / cols) / (ypx / rows)
+    except OSError:
+        pass
+    return 0.5
+
+
+def _png_size(path: Path) -> tuple[int, int]:
+    try:
+        with path.open("rb") as image:
+            header = image.read(24)
+        if header.startswith(b"\x89PNG\r\n\x1a\n") and header[12:16] == b"IHDR":
+            return int.from_bytes(header[16:20], "big"), int.from_bytes(header[20:24], "big")
+    except OSError:
+        pass
+    return 1, 1
+
+
+def _print_lumo_cat_image_box(width: int = 18) -> bool:
     if not _RICH or not LUMO_CAT_IMAGE.exists() or not _supports_inline_image():
         return False
     output = getattr(_console, "file", sys.stdout)
@@ -1205,7 +1229,21 @@ def _print_lumo_cat_image(width: int = 18, height: int = 18) -> bool:
         return False
 
     path_payload = base64.b64encode(str(LUMO_CAT_IMAGE).encode("utf-8")).decode("ascii")
-    output.write(f"\033_Ga=T,f=100,t=f,c={width},r={height};{path_payload}\033\\\n")
+    image_width, image_height = _png_size(LUMO_CAT_IMAGE)
+    rows = max(1, round(width * (image_height / image_width) * _terminal_cell_ratio(output)))
+    border_color = "\033[38;2;139;92;246m"
+    reset = "\033[0m"
+    top = f"{border_color}╭{'─' * (width + 2)}╮{reset}\n"
+    middle = f"{border_color}│{reset} "
+    image = f"\033_Ga=T,f=100,t=f,c={width};{path_payload}\033\\"
+    right = f" {border_color}│{reset}\n"
+    blank = f"{border_color}│{reset} {' ' * width} {border_color}│{reset}\n"
+    bottom = f"{border_color}╰{'─' * (width + 2)}╯{reset}\n"
+
+    output.write(top)
+    output.write(middle + image + right)
+    output.write(blank * max(0, rows - 1))
+    output.write(bottom)
     output.flush()
     return True
 
@@ -1217,7 +1255,7 @@ def _print_welcome(agent: LumodeAgent) -> None:
         print("Type /help for commands.\n")
         return
 
-    image_printed = _print_lumo_cat_image()
+    image_printed = _print_lumo_cat_image_box()
 
     # ── Lumo cat fallback art ─────────────────────────────────────────────────
     P  = "#7c3aed"   # Lumo purple
