@@ -1218,16 +1218,18 @@ def _print_inline_image_welcome(agent: LumodeAgent) -> bool:
         return False
 
     outer_width = min(108, max(78, _console.width - 4))
-    left_width = 28
+    left_width = 34
     gap = 4
     right_width = outer_width - left_width - gap
-    image_cols = 16
+    image_cols = 14
+    image_rows = 7
 
     cwd_str, branch, session_name = _plain_welcome_context(agent)
     left_lines: list[str] = []
     image_indent = 2
     image_pad = " " * image_indent
-    left_lines.append(image_pad + _kitty_image_escape(image_cols))
+    left_lines.append(image_pad + _kitty_image_escape(image_cols, image_rows))
+    left_lines.extend(" " * left_width for _ in range(image_rows - 1))
     left_lines.extend([
         "  Lumo-powered coding agent",
         f"  v{LUMODE_VERSION}",
