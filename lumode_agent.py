@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import datetime as dt
 import html
 import json
@@ -34,6 +35,7 @@ DEFAULT_COMPACT_SUMMARY_CHARS = 8_000
 LUMODE_VERSION = "0.2.0"
 SESSION_DIR = Path.home() / ".config" / "lumode" / "sessions"
 SESSION_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+LUMO_CAT_IMAGE = Path(__file__).resolve().parent / "images" / "lumo-cat.png"
 
 # ── Command metadata for completions ─────────────────────────────────────────
 _CMD_META: dict[str, str] = {
@@ -1182,6 +1184,32 @@ def _print_status(agent: LumodeAgent) -> None:
     _console.print(Panel(table, title="[bold]Status[/bold]", border_style="dim", padding=(1, 2)))
 
 
+def _supports_inline_image() -> bool:
+    if os.environ.get("LUMODE_NO_IMAGE"):
+        return False
+    if os.environ.get("LUMODE_FORCE_IMAGE"):
+        return True
+    if os.environ.get("KITTY_WINDOW_ID"):
+        return True
+
+    term = os.environ.get("TERM", "").lower()
+    term_program = os.environ.get("TERM_PROGRAM", "").lower()
+    return "kitty" in term or term_program in {"kitty", "ghostty", "wezterm"}
+
+
+def _print_lumo_cat_image(width: int = 18, height: int = 18) -> bool:
+    if not _RICH or not LUMO_CAT_IMAGE.exists() or not _supports_inline_image():
+        return False
+    output = getattr(_console, "file", sys.stdout)
+    if not getattr(output, "isatty", lambda: False)():
+        return False
+
+    path_payload = base64.b64encode(str(LUMO_CAT_IMAGE).encode("utf-8")).decode("ascii")
+    output.write(f"\033_Ga=T,f=100,t=f,c={width},r={height};{path_payload}\033\\\n")
+    output.flush()
+    return True
+
+
 def _print_welcome(agent: LumodeAgent) -> None:
     if not _RICH:
         print(f"Lumode v{LUMODE_VERSION}  Lumo-powered coding agent")
@@ -1189,9 +1217,9 @@ def _print_welcome(agent: LumodeAgent) -> None:
         print("Type /help for commands.\n")
         return
 
-    # ── Lumo cat ASCII art ────────────────────────────────────────────────────
-    # Based on the Lumo mascot reference: seated purple cat, tall ears, huge
-    # white eyes, small collar badge, compact front legs, and curled tail.
+    image_printed = _print_lumo_cat_image()
+
+    # ── Lumo cat fallback art ─────────────────────────────────────────────────
     P  = "#7c3aed"   # Lumo purple
     LP = "#8b5cf6"   # highlight purple
     DP = "#4c1d95"   # darker purple (outline / shadow)
@@ -1202,27 +1230,28 @@ def _print_welcome(agent: LumodeAgent) -> None:
     def la(s, st=P):
         left.append(s, style=st)
 
-    la("      /\\_/\\\n", LP)
-    la("   __/     \\__\n", LP)
-    la("  /  ")
-    la("◉", "white bold")
-    la("   ")
-    la("◉", "white bold")
-    la("  \\\n", LP)
-    la(" |     ")
-    la("▾", "#d8b4fe")
-    la("     |\n", LP)
-    la("  \\    ")
-    la("●", B)
-    la("    /\n", P)
-    la("   /|       |\\\n", P)
-    la("  / |       | \\___\n", P)
-    la(" |  |       |     `\\\n", P)
-    la(" |  |       |  /\\   |\n", P)
-    la(" |  |_______| |  |  |\n", DP)
-    la("  \\_________/ /  / /\n", DP)
-    la("    ||   ||  /__/ /\n", DP)
-    la("    ()   ()  `---'\n", DP)
+    if not image_printed:
+        la("      /\\_/\\\n", LP)
+        la("   __/     \\__\n", LP)
+        la("  /  ")
+        la("◉", "white bold")
+        la("   ")
+        la("◉", "white bold")
+        la("  \\\n", LP)
+        la(" |     ")
+        la("▾", "#d8b4fe")
+        la("     |\n", LP)
+        la("  \\    ")
+        la("●", B)
+        la("    /\n", P)
+        la("   /|       |\\\n", P)
+        la("  / |       | \\___\n", P)
+        la(" |  |       |     `\\\n", P)
+        la(" |  |       |  /\\   |\n", P)
+        la(" |  |_______| |  |  |\n", DP)
+        la("  \\_________/ /  / /\n", DP)
+        la("    ||   ||  /__/ /\n", DP)
+        la("    ()   ()  `---'\n", DP)
 
     # ── Identity ──────────────────────────────────────────────────────────────
     cwd_str = str(agent.cwd)
