@@ -1189,29 +1189,43 @@ def _print_welcome(agent: LumodeAgent) -> None:
         print("Type /help for commands.\n")
         return
 
-    # ── ASCII Lumo cat ────────────────────────────────────────────────────────
-    cat = Text(justify="center")
-    cat.append("    /\\_____/\\\n", style="cyan")
-    cat.append("   ( ◉     ◉ )\n", style="cyan")
-    cat.append("    \\   ⚡   /\n", style="cyan")
-    cat.append("     \\_____/\n", style="cyan")
+    # ── Lumo cat: purple body, big ◉ eyes, orange ◎ coin ─────────────────────
+    P = "#8b5cf6"   # Lumo purple
+    B = "#f59e0b"   # bell / coin orange
 
-    # ── Left column ───────────────────────────────────────────────────────────
+    left = Text()
+
+    def la(s, st=P):
+        left.append(s, style=st)
+
+    la("    /\\   /\\    \n")
+    la("   /  \\_/  \\   \n")
+    la("  | ")
+    la("◉", "white bold"); la("     "); la("◉", "white bold")
+    la(" |   \n")
+    la("  |    ")
+    la("▾", "dim white")
+    la("    |   \n")
+    la("  |    ")
+    la("◎", B)
+    la("    |   \n")
+    la("  |         |   \n")
+    la("   \\_______/    \n")
+
+    # ── Identity ──────────────────────────────────────────────────────────────
     cwd_str = str(agent.cwd)
     if len(cwd_str) > 32:
         cwd_str = "…" + cwd_str[-31:]
     branch = _get_git_branch(agent.cwd)
     session_name = agent.session_name or "(unsaved)"
 
-    left = Text()
-    left.append_text(cat)
-    left.append("\n")
-    left.append("  Lumo-powered coding agent\n", style="dim")
-    left.append(f"  v{LUMODE_VERSION}\n\n", style="bold")
-    left.append(f"  {cwd_str}\n", style="dim")
+    la("\n")
+    la("  Lumo-powered coding agent\n", "dim")
+    la(f"  v{LUMODE_VERSION}\n\n", "bold")
+    la(f"  {cwd_str}\n", "dim")
     if branch:
-        left.append(f"  branch: {branch}\n", style="cyan dim")
-    left.append(f"  session: {session_name}\n", style="dim")
+        la(f"  branch: {branch}\n", f"{P} dim")
+    la(f"  session: {session_name}\n", "dim")
 
     # ── Right column: commands + keys ─────────────────────────────────────────
     right = Table.grid(padding=(0, 2))
@@ -1250,8 +1264,8 @@ def _print_welcome(agent: LumodeAgent) -> None:
     _console.print()
     _console.print(Panel(
         grid,
-        title=f"[bold cyan]Lumode[/bold cyan] [dim]v{LUMODE_VERSION}[/dim]",
-        border_style="cyan",
+        title=f"[bold #8b5cf6]Lumode[/bold #8b5cf6] [dim]v{LUMODE_VERSION}[/dim]",
+        border_style="#8b5cf6",
         padding=(1, 2),
     ))
     _console.print()
