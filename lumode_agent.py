@@ -1190,10 +1190,11 @@ def _print_welcome(agent: LumodeAgent) -> None:
         return
 
     # ── Lumo cat ASCII art ────────────────────────────────────────────────────
-    # Based on the Lumo mascot: round purple body, tiny ears, HUGE white eyes,
-    # tiny triangle nose, orange coin badge at collar, round body, curling tail.
-    P  = "#8b5cf6"   # Lumo purple
-    DP = "#6d28d9"   # darker purple (outline / shadow)
+    # Based on the Lumo mascot reference: seated purple cat, tall ears, huge
+    # white eyes, small collar badge, compact front legs, and curled tail.
+    P  = "#7c3aed"   # Lumo purple
+    LP = "#8b5cf6"   # highlight purple
+    DP = "#4c1d95"   # darker purple (outline / shadow)
     B  = "#f59e0b"   # orange coin
 
     left = Text()
@@ -1201,36 +1202,30 @@ def _print_welcome(agent: LumodeAgent) -> None:
     def la(s, st=P):
         left.append(s, style=st)
 
-    #        /\   /\          <- tiny pointy ears
-    #       /  \ /  \
-    #      / (◉) (◉) \       <- HUGE round eyes
-    #      |    ▾    |        <- tiny triangle nose
-    #       \   ◎   /        <- round head→body transition, orange coin
-    #       /       \         <- round body
-    #      / ~     ~ \        <- paws
-    #      \__________/╮      <- base + tail start
-    #                  ╰─╮   <- tail curl
-    la("    /\\   /\\    \n")
-    la("   /  \\ /  \\   \n")
-    la("  / ")
-    la("(◉)", "white bold")
+    la("       /\\_/\\\n", LP)
+    la("    __/     \\__\n", LP)
+    la("   /  ")
+    la("◉", "white bold")
     la("   ")
-    la("(◉)", "white bold")
-    la(" \\  \n")
-    la("  |    ")
-    la("▾", "dim #d4b5fb")
-    la("    |  \n")
-    la("   \\   ")
-    la("◎", B)
-    la("   /   \n")
-    la("   /       \\   \n")
-    la("  / ~     ~ \\  \n", DP)
-    la("  \\__________/", DP)
-    la("╮\n", "dim")
-    la("              ")
-    la("╰─╮\n", "dim")
-    la("               ")
-    la("╯\n", "dim")
+    la("◉", "white bold")
+    la("  \\\n", LP)
+    la("  |      ")
+    la("▾", "#d8b4fe")
+    la("      |\n", LP)
+    la("   \\    ")
+    la("•", "#d8b4fe")
+    la("     _/\n", LP)
+    la("    /\\")
+    la("  ●", B)
+    la("   _.-'\n", P)
+    la("   /  \\__.-'   \\__\n", P)
+    la("  |    \\         _ `-.\n", P)
+    la("  | |\\  |       / `-. \\\n", P)
+    la("  |_| | |      |    | |\n", DP)
+    la("   || | |______|    | |\n", DP)
+    la("   () ()           / /\n", DP)
+    la("        `-.___.-._/ /\n", DP)
+    la("             `-.__.'\n", DP)
 
     # ── Identity ──────────────────────────────────────────────────────────────
     cwd_str = str(agent.cwd)
