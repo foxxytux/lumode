@@ -1189,28 +1189,48 @@ def _print_welcome(agent: LumodeAgent) -> None:
         print("Type /help for commands.\n")
         return
 
-    # ── Lumo cat: purple body, big ◉ eyes, orange ◎ coin ─────────────────────
-    P = "#8b5cf6"   # Lumo purple
-    B = "#f59e0b"   # bell / coin orange
+    # ── Lumo cat ASCII art ────────────────────────────────────────────────────
+    # Based on the Lumo mascot: round purple body, tiny ears, HUGE white eyes,
+    # tiny triangle nose, orange coin badge at collar, round body, curling tail.
+    P  = "#8b5cf6"   # Lumo purple
+    DP = "#6d28d9"   # darker purple (outline / shadow)
+    B  = "#f59e0b"   # orange coin
 
     left = Text()
 
     def la(s, st=P):
         left.append(s, style=st)
 
+    #        /\   /\          <- tiny pointy ears
+    #       /  \ /  \
+    #      / (◉) (◉) \       <- HUGE round eyes
+    #      |    ▾    |        <- tiny triangle nose
+    #       \   ◎   /        <- round head→body transition, orange coin
+    #       /       \         <- round body
+    #      / ~     ~ \        <- paws
+    #      \__________/╮      <- base + tail start
+    #                  ╰─╮   <- tail curl
     la("    /\\   /\\    \n")
-    la("   /  \\_/  \\   \n")
-    la("  | ")
-    la("◉", "white bold"); la("     "); la("◉", "white bold")
-    la(" |   \n")
+    la("   /  \\ /  \\   \n")
+    la("  / ")
+    la("(◉)", "white bold")
+    la("   ")
+    la("(◉)", "white bold")
+    la(" \\  \n")
     la("  |    ")
-    la("▾", "dim white")
-    la("    |   \n")
-    la("  |    ")
+    la("▾", "dim #d4b5fb")
+    la("    |  \n")
+    la("   \\   ")
     la("◎", B)
-    la("    |   \n")
-    la("  |         |   \n")
-    la("   \\_______/    \n")
+    la("   /   \n")
+    la("   /       \\   \n")
+    la("  / ~     ~ \\  \n", DP)
+    la("  \\__________/", DP)
+    la("╮\n", "dim")
+    la("              ")
+    la("╰─╮\n", "dim")
+    la("               ")
+    la("╯\n", "dim")
 
     # ── Identity ──────────────────────────────────────────────────────────────
     cwd_str = str(agent.cwd)
