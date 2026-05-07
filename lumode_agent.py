@@ -34,6 +34,41 @@ LUMODE_VERSION = "0.2.0"
 SESSION_DIR = Path.home() / ".config" / "lumode" / "sessions"
 SESSION_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 
+# ── Command metadata for completions ─────────────────────────────────────────
+_CMD_META: dict[str, str] = {
+    "/help": "Show all commands",
+    "/add": "Add file/dir as context",
+    "/tree": "Add directory tree",
+    "/run": "Run shell command → context",
+    "/search": "Web search → context",
+    "/fetch": "Fetch URL → context",
+    "/context": "List pending context",
+    "/apply": "Apply diff from last response",
+    "/compact": "Compact history to summary",
+    "/auto-compact": "Configure auto-compaction",
+    "/status": "Session & context status",
+    "/history": "Show chat history",
+    "/last": "Show or save last response",
+    "/drop": "Drop a context item",
+    "/note": "Add text note as context",
+    "/prompt": "Show/set system prompt",
+    "/read": "Print file (no context)",
+    "/ls": "Print directory tree",
+    "/sessions": "List saved sessions",
+    "/save": "Save session to disk",
+    "/load": "Load a saved session",
+    "/new": "Start a new session",
+    "/rename": "Rename current session",
+    "/delete": "Delete a saved session",
+    "/export": "Export session as Markdown",
+    "/pwd": "Print workspace directory",
+    "/cd": "Change workspace directory",
+    "/reset": "Reset all session state",
+    "/version": "Show Lumode version",
+    "/clear": "Clear history & context",
+    "/quit": "Exit Lumode",
+}
+
 # ── Optional enhanced TUI deps ────────────────────────────────────────────────
 try:
     from rich.console import Console
@@ -111,7 +146,7 @@ Work style:
 
 # ── Prompt-toolkit completer ──────────────────────────────────────────────────
 class _CmdCompleter(Completer):
-    """Tab-complete slash commands and file/directory paths."""
+    """Tab-complete slash commands, session names, and file/directory paths."""
 
     _CMDS = [
         "/help", "/context", "/apply", "/clear", "/quit",
@@ -122,19 +157,40 @@ class _CmdCompleter(Completer):
         "/add ", "/tree ", "/run ", "/search ", "/fetch ",
     ]
     _PATH_PREFIXES = ("/add ", "/tree ", "/cd ", "/export ", "/last ", "/read ", "/ls ")
+    _SESSION_PREFIXES = ("/load ", "/delete ", "/rename ")
+
+    def __init__(self, get_sessions=None):
+        self._get_sessions = get_sessions or (lambda: [])
 
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
 
+        # Only complete slash commands — skip normal chat input entirely
+        if not text.startswith("/"):
+            return
+
         # Complete bare command names (no space yet)
-        if text.startswith("/") and " " not in text:
+        if " " not in text:
             for cmd in self._CMDS:
                 bare = cmd.strip()
                 if bare.startswith(text) and bare != text.strip():
-                    yield Completion(bare[len(text):], display=bare)
+                    yield Completion(
+                        bare[len(text):],
+                        display=bare,
+                        display_meta=_CMD_META.get(bare, ""),
+                    )
             return
 
-        # Complete file paths after /add or /tree
+        # Complete session names after /load, /delete, /rename
+        for prefix in self._SESSION_PREFIXES:
+            if text.startswith(prefix):
+                stem = text[len(prefix):]
+                for name in self._get_sessions():
+                    if name.startswith(stem):
+                        yield Completion(name[len(stem):], display=name, display_meta="saved session")
+                return
+
+        # Complete file paths after path-taking commands
         for prefix in self._PATH_PREFIXES:
             if text.startswith(prefix):
                 yield from self._path_completions(text[len(prefix):])
@@ -1074,10 +1130,49 @@ def _print_sessions(agent: LumodeAgent) -> None:
             print(f"  {item['name']}{marker}\t{item['updated_at']}\t{item['cwd']}")
 
 
+def _get_git_branch(cwd: Path) -> Optional[str]:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=cwd, capture_output=True, text=True, timeout=3,
+        )
+        if result.returncode == 0:
+            branch = result.stdout.strip()
+            return branch if branch and branch != "HEAD" else None
+    except Exception:
+        pass
+    return None
+
+
+def _print_status(agent: LumodeAgent) -> None:
+    if not _RICH:
+        _print_info(agent.status())
+        return
+    table = Table(show_header=False, box=None, padding=(0, 2), show_edge=False)
+    table.add_column("key", style="dim", no_wrap=True)
+    table.add_column("val", style="bold")
+    chars = agent.history_chars()
+    ctx_chars = sum(len(i.content) for i in agent.context)
+    table.add_row("Session", agent.session_name or "[dim](unsaved)[/dim]")
+    table.add_row("Directory", str(agent.cwd))
+    branch = _get_git_branch(agent.cwd)
+    if branch:
+        table.add_row("Git branch", f"[cyan]{branch}[/cyan]")
+    table.add_row("History", f"{len(agent.history)} messages · {chars:,} chars")
+    table.add_row("Context", f"{len(agent.context)} pending items · {ctx_chars:,} chars")
+    table.add_row("Last response", f"{len(agent.last_response):,} chars")
+    ac = "on" if agent.auto_compact else "off"
+    table.add_row(
+        "Auto-compact",
+        f"[green]{ac}[/green] · threshold {agent.auto_compact_chars:,} · keep {agent.compact_keep_messages}",
+    )
+    _console.print(Panel(table, title="[bold]Status[/bold]", border_style="dim", padding=(1, 2)))
+
+
 # ── Interactive REPL ──────────────────────────────────────────────────────────
 
-def _make_session() -> "Optional[PromptSession]":
-    """Build a prompt_toolkit PromptSession with history and completion."""
+def _make_session(agent: "LumodeAgent") -> "Optional[PromptSession]":
+    """Build a prompt_toolkit PromptSession with history, completion, and status toolbar."""
     if not _PT:
         return None
     history_dir = Path.home() / ".config" / "lumode"
@@ -1089,14 +1184,37 @@ def _make_session() -> "Optional[PromptSession]":
     def _exit(event):
         event.app.exit(exception=EOFError)
 
+    @kb.add("escape", "enter")
+    def _insert_newline(event):
+        event.current_buffer.insert_text("\n")
+
+    def _toolbar():
+        try:
+            name = agent.session_name or "unsaved"
+            ctx = len(agent.context)
+            hist = len(agent.history)
+            chars = agent.history_chars()
+            chars_str = f"{chars // 1000}k" if chars >= 1000 else str(chars)
+            ctx_part = f"  ctx:<b>{ctx}</b>" if ctx else ""
+            return HTML(
+                f"  <b>{name}</b>"
+                f"  hist:<b>{hist}</b>/{chars_str}c"
+                f"{ctx_part}"
+                f"  <b>Tab</b>:complete  <b>↑↓</b>:history  <b>Alt+↵</b>:newline"
+            )
+        except Exception:
+            return ""
+
     return PromptSession(
         history=FileHistory(str(history_dir / "history")),
         auto_suggest=AutoSuggestFromHistory(),
-        completer=_CmdCompleter(),
-        complete_while_typing=False,
+        completer=_CmdCompleter(
+            get_sessions=lambda: [s["name"] for s in agent.list_sessions()]
+        ),
+        complete_while_typing=True,
+        bottom_toolbar=_toolbar,
         style=PTStyle.from_dict({
-            "prompt.user": "ansigreen bold",
-            "prompt.arrow": "ansiblue",
+            "bottom-toolbar": "bg:#1c1c2e fg:#888888",
         }),
         key_bindings=kb,
     )
@@ -1105,16 +1223,18 @@ def _make_session() -> "Optional[PromptSession]":
 def interactive(agent: LumodeAgent, debug: bool = False) -> None:
     # ── Header ────────────────────────────────────────────────────────────────
     if _RICH:
+        branch = _get_git_branch(agent.cwd)
+        branch_info = f"  [dim]branch:[/dim] [bold cyan]{branch}[/bold cyan]" if branch else ""
         _console.print()
         _console.print(
             Rule(
-                "[bold cyan]Lumode[/bold cyan]  [dim]Lumo-powered coding agent[/dim]",
+                f"[bold cyan]Lumode[/bold cyan] [dim]v{LUMODE_VERSION}[/dim]  [dim]Lumo-powered coding agent[/dim]",
                 style="dim",
             )
         )
-        _console.print(f"  [dim]cwd:[/dim] [bold]{agent.cwd}[/bold]")
+        _console.print(f"  [dim]cwd:[/dim] [bold]{agent.cwd}[/bold]{branch_info}")
         _console.print(
-            "  [dim]Tab to complete commands · Up/Down for history · Ctrl-D to exit[/dim]"
+            "  [dim]Tab: complete  ↑↓: history  Alt+Enter: newline  Ctrl-D: exit[/dim]"
         )
         _console.print()
     else:
@@ -1123,13 +1243,14 @@ def interactive(agent: LumodeAgent, debug: bool = False) -> None:
         print(f"{Colors.DIM}Type /help for commands.{Colors.RESET}\n")
 
     # ── Input setup ───────────────────────────────────────────────────────────
-    session = _make_session()
+    session = _make_session(agent)
 
     def get_input() -> str:
         if session is not None:
             session_label = f" [{agent.session_name}]" if agent.session_name else ""
+            ctx_hint = f"<ansicyan><b>+{len(agent.context)}</b></ansicyan> " if agent.context else ""
             return session.prompt(
-                HTML(f'<ansigreen><b>lumode{session_label}</b></ansigreen><ansiblue>❯</ansiblue> ')
+                HTML(f'<ansigreen><b>lumode{session_label}</b></ansigreen> {ctx_hint}<ansiblue>❯</ansiblue> ')
             ).strip()
         session_label = f" [{agent.session_name}]" if agent.session_name else ""
         return input(f"{Colors.GREEN}lumode{session_label}>{Colors.RESET} ").strip()
@@ -1153,7 +1274,7 @@ def interactive(agent: LumodeAgent, debug: bool = False) -> None:
             _print_info(agent.context_status())
             continue
         if raw == "/status":
-            _print_info(agent.status())
+            _print_status(agent)
             continue
         if raw == "/version":
             _print_info(f"Lumode {LUMODE_VERSION}")
