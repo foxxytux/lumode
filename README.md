@@ -8,6 +8,8 @@ Command-line tools for Proton's Lumo AI assistant, including `lumode`, a local c
 - **Interactive chat** with streaming responses
 - **Coding-focused prompts** optimized for development tasks
 - **Multi-turn conversations** with conversation history
+- **Named sessions** saved locally under `~/.config/lumode/sessions`
+- **Polished slash commands** for context, tools, workspace navigation, and transcript export
 - **Firefox authentication** - uses your existing Lumo session
 - **Custom system prompts** for different use cases
 - **Pipe-friendly** - works with stdin/stdout
@@ -25,9 +27,8 @@ Command-line tools for Proton's Lumo AI assistant, including `lumode`, a local c
 # Make executable
 chmod +x lumode lumo_cli.py
 
-# Create alias for convenience (add to ~/.bashrc or ~/.zshrc)
-alias lumode='/path/to/lumode'
-alias lumo='python3 /path/to/lumo_cli.py'
+# Install commands into ~/.local/bin
+./install.sh
 ```
 
 ## Usage
@@ -49,6 +50,15 @@ Useful interactive commands:
 /search query         Search the web and add results as context
 /fetch https://...    Fetch URL text and add it as context
 /apply                Apply a unified diff from the last Lumo response
+/sessions             List saved sessions
+/save bugfix          Save the current session
+/load bugfix          Load a saved session
+/new scratch          Start a blank session
+/rename bugfix-v2     Rename the active saved session
+/delete scratch       Delete a saved session
+/export notes.md      Export transcript as Markdown
+/pwd                  Show the active workspace directory
+/cd ../other-repo      Change workspace directory
 /clear                Clear chat history and pending context
 /quit                 Exit
 ```
@@ -62,7 +72,11 @@ Single-turn examples:
 ./lumode --tree . --run "pytest -q" "Fix the failing tests"
 ./lumode --search "latest Python release" "Summarize the current release"
 ./lumode --apply --file bug.py "Return and apply a patch for this bug"
+./lumode --session bugfix "Continue the previous fix"
+./lumode --save-session review --file app.py "Review this file"
 ```
+
+Saved sessions contain chat history, pending context, last response, and the active workspace directory. They do not contain Lumo auth tokens.
 
 ### Interactive Mode
 
@@ -171,6 +185,7 @@ cat error_output.txt | ./lumo_cli.py -c "Why is this error happening?"
 - `Ctrl+C` or `/quit` - Exit chat
 - `/clear` - Clear conversation history
 - `/q` - Quick exit
+- `/help` - Show the complete slash command list
 
 ## Environment Variables
 

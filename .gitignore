@@ -55,3 +55,4 @@ config.local.json
 
 # Claude Code local settings (may contain auth tokens)
 .claude/
+.commandcode/

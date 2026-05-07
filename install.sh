@@ -51,9 +51,14 @@ echo
 echo "Setting up ~/.local/bin..."
 mkdir -p "$BIN_DIR"
 
-ln -sf "$SCRIPT_DIR/lumode" "$BIN_DIR/lumode"
 chmod +x "$SCRIPT_DIR/lumode"
-echo "  Linked: lumode → $SCRIPT_DIR/lumode"
+chmod +x "$SCRIPT_DIR/lumo_cli.py"
+ln -sf "$SCRIPT_DIR/lumode" "$BIN_DIR/lumode"
+ln -sf "$SCRIPT_DIR/lumo_cli.py" "$BIN_DIR/lumo"
+ln -sf "$SCRIPT_DIR/lumo_cli.py" "$BIN_DIR/lumo-cli"
+echo "  Linked: lumode -> $SCRIPT_DIR/lumode"
+echo "  Linked: lumo    -> $SCRIPT_DIR/lumo_cli.py"
+echo "  Linked: lumo-cli -> $SCRIPT_DIR/lumo_cli.py"
 
 # ── PATH check ───────────────────────────────────────────────────────────────
 echo

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import html
 import json
 import os
@@ -26,6 +27,8 @@ DEFAULT_MAX_FILE_BYTES = 80_000
 DEFAULT_MAX_COMMAND_BYTES = 80_000
 DEFAULT_MAX_TOOL_ROUNDS = 8
 DEFAULT_MAX_SEARCH_BYTES = 30_000
+SESSION_DIR = Path.home() / ".config" / "lumode" / "sessions"
+SESSION_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 
 # ── Optional enhanced TUI deps ────────────────────────────────────────────────
 try:
@@ -108,9 +111,11 @@ class _CmdCompleter(Completer):
 
     _CMDS = [
         "/help", "/context", "/apply", "/clear", "/quit",
+        "/sessions", "/save ", "/load ", "/new ", "/delete ", "/rename ",
+        "/export ", "/pwd", "/cd ",
         "/add ", "/tree ", "/run ", "/search ", "/fetch ",
     ]
-    _PATH_PREFIXES = ("/add ", "/tree ")
+    _PATH_PREFIXES = ("/add ", "/tree ", "/cd ", "/export ")
 
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
@@ -173,6 +178,7 @@ class LumodeAgent:
         self.history: list[dict[str, str]] = []
         self.context: list[ContextItem] = []
         self.last_response = ""
+        self.session_name: Optional[str] = None
 
     # ── Public context helpers ────────────────────────────────────────────────
 
@@ -208,6 +214,13 @@ class LumodeAgent:
         output = self.run_command(command)
         self.context.append(ContextItem(f"command: {command}", output))
         return "Added command output"
+
+    def change_cwd(self, path_text: str) -> str:
+        path = self._safe_path(path_text)
+        if not path.is_dir():
+            return f"Not a directory: {path_text}"
+        self.cwd = path
+        return f"Changed cwd to {self.cwd}"
 
     def run_command(self, command: str, timeout: int = 60) -> str:
         try:
@@ -273,6 +286,8 @@ class LumodeAgent:
             self.history.append({"Role": "assistant", "Content": msg_text})
             self.last_response = msg_text
             self.context = []
+            if self.session_name:
+                self.save_session(self.session_name)
             return msg_text
 
         raise RuntimeError(f"Tool loop exceeded {DEFAULT_MAX_TOOL_ROUNDS} rounds.")
@@ -470,6 +485,110 @@ class LumodeAgent:
         self.context = []
         self.last_response = ""
 
+    def new_session(self, name: Optional[str] = None) -> str:
+        self.clear()
+        self.session_name = self._validate_session_name(name) if name else None
+        if self.session_name:
+            self.save_session(self.session_name)
+            return f"Started session: {self.session_name}"
+        return "Started a new unsaved session."
+
+    def save_session(self, name: Optional[str] = None) -> str:
+        session_name = self._validate_session_name(name or self.session_name)
+        SESSION_DIR.mkdir(parents=True, exist_ok=True)
+        path = self._session_path(session_name)
+        now = dt.datetime.now(dt.timezone.utc).isoformat()
+        created_at = now
+        if path.exists():
+            try:
+                created_at = json.loads(path.read_text(encoding="utf-8")).get("created_at", now)
+            except (OSError, json.JSONDecodeError):
+                created_at = now
+        payload = {
+            "name": session_name,
+            "created_at": created_at,
+            "updated_at": now,
+            "cwd": str(self.cwd),
+            "history": self.history,
+            "context": [item.__dict__ for item in self.context],
+            "last_response": self.last_response,
+        }
+        path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        self.session_name = session_name
+        return f"Saved session: {session_name}"
+
+    def load_session(self, name: str) -> str:
+        session_name = self._validate_session_name(name)
+        path = self._session_path(session_name)
+        if not path.exists():
+            return f"Session not found: {session_name}"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        self.session_name = session_name
+        self.cwd = Path(data.get("cwd") or self.cwd).expanduser().resolve()
+        self.history = [
+            {"Role": str(item.get("Role", item.get("role", "user"))), "Content": str(item.get("Content", item.get("content", "")))}
+            for item in data.get("history", [])
+            if isinstance(item, dict)
+        ]
+        self.context = [
+            ContextItem(str(item.get("label", "context")), str(item.get("content", "")))
+            for item in data.get("context", [])
+            if isinstance(item, dict)
+        ]
+        self.last_response = str(data.get("last_response", ""))
+        return f"Loaded session: {session_name}"
+
+    def delete_session(self, name: str) -> str:
+        session_name = self._validate_session_name(name)
+        path = self._session_path(session_name)
+        if not path.exists():
+            return f"Session not found: {session_name}"
+        path.unlink()
+        if self.session_name == session_name:
+            self.session_name = None
+        return f"Deleted session: {session_name}"
+
+    def rename_session(self, new_name: str) -> str:
+        if not self.session_name:
+            return "No active saved session. Use /save <name> first."
+        old_name = self.session_name
+        new_session_name = self._validate_session_name(new_name)
+        old_path = self._session_path(old_name)
+        new_path = self._session_path(new_session_name)
+        if new_path.exists():
+            return f"Session already exists: {new_session_name}"
+        if old_path.exists():
+            old_path.rename(new_path)
+        self.session_name = new_session_name
+        self.save_session(new_session_name)
+        return f"Renamed session: {old_name} -> {new_session_name}"
+
+    def list_sessions(self) -> list[dict[str, str]]:
+        if not SESSION_DIR.exists():
+            return []
+        sessions = []
+        for path in sorted(SESSION_DIR.glob("*.json")):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            sessions.append({
+                "name": str(data.get("name") or path.stem),
+                "updated_at": str(data.get("updated_at") or ""),
+                "cwd": str(data.get("cwd") or ""),
+            })
+        return sorted(sessions, key=lambda item: item["updated_at"], reverse=True)
+
+    def export_session(self, path_text: Optional[str] = None) -> str:
+        if path_text:
+            path = self._safe_path(path_text)
+        else:
+            name = self.session_name or "lumode-session"
+            path = self.cwd / f"{name}-{dt.datetime.now().strftime('%Y%m%d-%H%M%S')}.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(self._session_markdown(), encoding="utf-8")
+        return f"Exported session to {path}"
+
     def context_status(self) -> str:
         if not self.context:
             return "No pending context."
@@ -500,6 +619,37 @@ class LumodeAgent:
             return str(path.relative_to(self.cwd))
         except ValueError:
             return str(path)
+
+    @staticmethod
+    def _validate_session_name(name: Optional[str]) -> str:
+        if not name:
+            raise ValueError("Session name required.")
+        if not SESSION_NAME_RE.match(name):
+            raise ValueError("Session names can use letters, numbers, dots, dashes, and underscores.")
+        return name
+
+    @staticmethod
+    def _session_path(name: str) -> Path:
+        return SESSION_DIR / f"{name}.json"
+
+    def _session_markdown(self) -> str:
+        title = self.session_name or "unsaved"
+        lines = [
+            f"# Lumode Session: {title}",
+            "",
+            f"- cwd: `{self.cwd}`",
+            f"- exported: `{dt.datetime.now(dt.timezone.utc).isoformat()}`",
+            "",
+        ]
+        for item in self.history:
+            role = item.get("Role", item.get("role", "unknown"))
+            content = item.get("Content", item.get("content", ""))
+            lines.extend([f"## {role}", "", str(content).strip(), ""])
+        if self.context:
+            lines.extend(["## Pending Context", ""])
+            for item in self.context:
+                lines.extend([f"### {item.label}", "", "```text", item.content, "```", ""])
+        return "\n".join(lines).rstrip() + "\n"
 
     def _tree(self, path: Path, max_depth: int, depth: int = 0, prefix: str = "") -> str:
         if depth > max_depth:
@@ -628,6 +778,15 @@ def print_help() -> None:
             ("/fetch <url>", "Fetch URL text as context"),
             ("/context", "Show pending context items"),
             ("/apply", "Apply unified diff from last response"),
+            ("/sessions", "List saved sessions"),
+            ("/save [name]", "Save the current chat session"),
+            ("/load <name>", "Load a saved chat session"),
+            ("/new [name]", "Start a blank session"),
+            ("/rename <name>", "Rename the active saved session"),
+            ("/delete <name>", "Delete a saved session"),
+            ("/export [path]", "Export the session transcript as Markdown"),
+            ("/pwd", "Show current workspace directory"),
+            ("/cd <path>", "Change workspace directory"),
             ("/clear", "Clear chat history and pending context"),
             ("/quit", "Exit"),
         ]
@@ -644,6 +803,15 @@ def print_help() -> None:
   /fetch <url>          Fetch URL text and add it as context
   /context              Show pending context
   /apply                Apply unified diff from the last Lumo response
+  /sessions             List saved sessions
+  /save [name]          Save the current chat session
+  /load <name>          Load a saved chat session
+  /new [name]           Start a blank session
+  /rename <name>        Rename the active saved session
+  /delete <name>        Delete a saved session
+  /export [path]        Export the session transcript as Markdown
+  /pwd                  Show current workspace directory
+  /cd <path>            Change workspace directory
   /clear                Clear chat history and pending context
   /quit                 Exit
 
@@ -651,6 +819,8 @@ Examples:
   /tree . 2
   /add src/app.py
   /run pytest -q
+  /save bugfix-notes
+  /load bugfix-notes
   /search latest Python release
   Fix the failing test and return a diff.
   /apply
@@ -684,6 +854,27 @@ def _print_error(msg: str) -> None:
         _console.print(Panel(msg, title="[bold red]Error[/bold red]", border_style="red"))
     else:
         print(f"{Colors.RED}Error: {msg}{Colors.RESET}")
+
+
+def _print_sessions(agent: LumodeAgent) -> None:
+    sessions = agent.list_sessions()
+    if not sessions:
+        _print_info("No saved sessions.")
+        return
+    if _RICH:
+        table = Table(show_header=True, header_style="bold cyan", box=None, padding=(0, 2))
+        table.add_column("Name", no_wrap=True)
+        table.add_column("Updated", no_wrap=True)
+        table.add_column("Workspace")
+        for item in sessions:
+            marker = " *" if item["name"] == agent.session_name else ""
+            table.add_row(item["name"] + marker, item["updated_at"], item["cwd"])
+        _console.print(Panel(table, title="[bold]Sessions[/bold]", border_style="dim", padding=(1, 2)))
+    else:
+        print("Sessions:")
+        for item in sessions:
+            marker = " *" if item["name"] == agent.session_name else ""
+            print(f"  {item['name']}{marker}\t{item['updated_at']}\t{item['cwd']}")
 
 
 # ── Interactive REPL ──────────────────────────────────────────────────────────
@@ -739,10 +930,12 @@ def interactive(agent: LumodeAgent, debug: bool = False) -> None:
 
     def get_input() -> str:
         if session is not None:
+            session_label = f" [{agent.session_name}]" if agent.session_name else ""
             return session.prompt(
-                HTML('<ansigreen><b>lumode</b></ansigreen><ansiblue>❯</ansiblue> ')
+                HTML(f'<ansigreen><b>lumode{session_label}</b></ansigreen><ansiblue>❯</ansiblue> ')
             ).strip()
-        return input(f"{Colors.GREEN}lumode>{Colors.RESET} ").strip()
+        session_label = f" [{agent.session_name}]" if agent.session_name else ""
+        return input(f"{Colors.GREEN}lumode{session_label}>{Colors.RESET} ").strip()
 
     # ── Main loop ─────────────────────────────────────────────────────────────
     while True:
@@ -762,6 +955,12 @@ def interactive(agent: LumodeAgent, debug: bool = False) -> None:
         if raw == "/context":
             _print_info(agent.context_status())
             continue
+        if raw == "/sessions":
+            _print_sessions(agent)
+            continue
+        if raw == "/pwd":
+            _print_info(str(agent.cwd))
+            continue
         if raw == "/clear":
             agent.clear()
             _print_ok("Cleared history and context.")
@@ -769,6 +968,64 @@ def interactive(agent: LumodeAgent, debug: bool = False) -> None:
         if raw == "/apply":
             result = agent.apply_last_patch()
             (_print_ok if "applied" in result.lower() else _print_info)(result)
+            continue
+        if raw.startswith("/new"):
+            parts = shlex.split(raw)
+            try:
+                _print_ok(agent.new_session(parts[1] if len(parts) > 1 else None))
+            except ValueError as exc:
+                _print_error(str(exc))
+            continue
+        if raw.startswith("/save"):
+            parts = shlex.split(raw)
+            try:
+                _print_ok(agent.save_session(parts[1] if len(parts) > 1 else None))
+            except (OSError, ValueError) as exc:
+                _print_error(str(exc))
+            continue
+        if raw.startswith("/load "):
+            parts = shlex.split(raw)
+            if len(parts) < 2:
+                _print_error("Usage: /load <name>")
+                continue
+            try:
+                msg = agent.load_session(parts[1])
+                (_print_ok if msg.startswith("Loaded") else _print_info)(msg)
+            except (OSError, ValueError, json.JSONDecodeError) as exc:
+                _print_error(str(exc))
+            continue
+        if raw.startswith("/delete "):
+            parts = shlex.split(raw)
+            if len(parts) < 2:
+                _print_error("Usage: /delete <name>")
+                continue
+            try:
+                msg = agent.delete_session(parts[1])
+                (_print_ok if msg.startswith("Deleted") else _print_info)(msg)
+            except (OSError, ValueError) as exc:
+                _print_error(str(exc))
+            continue
+        if raw.startswith("/rename "):
+            parts = shlex.split(raw)
+            if len(parts) < 2:
+                _print_error("Usage: /rename <name>")
+                continue
+            try:
+                msg = agent.rename_session(parts[1])
+                (_print_ok if msg.startswith("Renamed") else _print_info)(msg)
+            except (OSError, ValueError) as exc:
+                _print_error(str(exc))
+            continue
+        if raw.startswith("/export"):
+            parts = shlex.split(raw)
+            try:
+                _print_ok(agent.export_session(parts[1] if len(parts) > 1 else None))
+            except OSError as exc:
+                _print_error(str(exc))
+            continue
+        if raw.startswith("/cd "):
+            msg = agent.change_cwd(raw[4:].strip())
+            (_print_ok if msg.startswith("Changed") else _print_info)(msg)
             continue
         if raw.startswith("/add "):
             msg = agent.add_path(raw[5:].strip())
@@ -839,6 +1096,7 @@ def main() -> None:
   lumode --tree . --run "pytest -q" "Fix the failing tests"
   lumode --search "latest Python release" "Summarize this"
   lumode --apply --file bug.py "Return a unified diff for the bug"
+  lumode --session bugfix "Continue where we left off"
 """,
     )
     parser.add_argument("message", nargs="?", help="Message to send")
@@ -851,6 +1109,8 @@ def main() -> None:
     parser.add_argument("--search", action="append", help="Search the web and add results as context")
     parser.add_argument("--fetch", action="append", help="Fetch URL text and add it as context")
     parser.add_argument("--apply", action="store_true", help="Apply unified diff from response")
+    parser.add_argument("--session", help="Load a saved session before running")
+    parser.add_argument("--save-session", help="Save the conversation under this session name")
     parser.add_argument("--debug", action="store_true", help="Print raw responses and tool results")
 
     args = parser.parse_args()
@@ -860,6 +1120,11 @@ def main() -> None:
 
     try:
         agent = build_agent(args)
+        if args.session:
+            msg = agent.load_session(args.session)
+            (_print_ok if msg.startswith("Loaded") else _print_info)(msg)
+        if args.save_session:
+            agent.session_name = LumodeAgent._validate_session_name(args.save_session)
         if args.file:
             for file_path in args.file:
                 _print_ok(agent.add_path(file_path))
@@ -882,12 +1147,16 @@ def main() -> None:
             if args.apply:
                 result = agent.apply_last_patch()
                 _print_ok(result)
+            if args.save_session:
+                _print_ok(agent.save_session(args.save_session))
         elif not sys.stdin.isatty():
             message = sys.stdin.read().strip()
             if message:
                 agent.ask(message, debug=args.debug)
                 if args.apply:
                     _print_ok(agent.apply_last_patch())
+                if args.save_session:
+                    _print_ok(agent.save_session(args.save_session))
         else:
             interactive(agent, debug=args.debug)
 
