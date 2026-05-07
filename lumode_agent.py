@@ -1221,29 +1221,99 @@ def _png_size(path: Path) -> tuple[int, int]:
     return 1, 1
 
 
-def _print_lumo_cat_image_box(width: int = 18) -> bool:
+def _kitty_image_escape(width: int) -> str:
+    path_payload = base64.b64encode(str(LUMO_CAT_IMAGE).encode("utf-8")).decode("ascii")
+    return f"\033_Ga=T,f=100,t=f,c={width};{path_payload}\033\\"
+
+
+def _plain_welcome_context(agent: LumodeAgent) -> tuple[str, Optional[str], str]:
+    cwd_str = str(agent.cwd)
+    if len(cwd_str) > 32:
+        cwd_str = "…" + cwd_str[-31:]
+    return cwd_str, _get_git_branch(agent.cwd), agent.session_name or "(unsaved)"
+
+
+def _print_inline_image_welcome(agent: LumodeAgent) -> bool:
     if not _RICH or not LUMO_CAT_IMAGE.exists() or not _supports_inline_image():
         return False
     output = getattr(_console, "file", sys.stdout)
     if not getattr(output, "isatty", lambda: False)():
         return False
 
-    path_payload = base64.b64encode(str(LUMO_CAT_IMAGE).encode("utf-8")).decode("ascii")
+    outer_width = min(132, max(78, _console.width - 2))
+    left_width = 35
+    gap = 3
+    right_width = outer_width - left_width - gap
     image_width, image_height = _png_size(LUMO_CAT_IMAGE)
-    rows = max(1, round(width * (image_height / image_width) * _terminal_cell_ratio(output)))
-    border_color = "\033[38;2;139;92;246m"
-    reset = "\033[0m"
-    top = f"{border_color}╭{'─' * (width + 2)}╮{reset}\n"
-    middle = f"{border_color}│{reset} "
-    image = f"\033_Ga=T,f=100,t=f,c={width};{path_payload}\033\\"
-    right = f" {border_color}│{reset}\n"
-    blank = f"{border_color}│{reset} {' ' * width} {border_color}│{reset}\n"
-    bottom = f"{border_color}╰{'─' * (width + 2)}╯{reset}\n"
+    image_cols = 18
+    image_rows = max(1, round(image_cols * (image_height / image_width) * _terminal_cell_ratio(output)))
 
-    output.write(top)
-    output.write(middle + image + right)
-    output.write(blank * max(0, rows - 1))
-    output.write(bottom)
+    cwd_str, branch, session_name = _plain_welcome_context(agent)
+    left_lines: list[str] = []
+    image_pad = " " * 3
+    left_lines.append(image_pad + _kitty_image_escape(image_cols))
+    left_lines.extend((" " * left_width) for _ in range(max(0, image_rows - 1)))
+    left_lines.extend([
+        "",
+        "  Lumo-powered coding agent",
+        f"  v{LUMODE_VERSION}",
+        "",
+        f"  {cwd_str}",
+    ])
+    if branch:
+        left_lines.append(f"  branch: {branch}")
+    left_lines.append(f"  session: {session_name}")
+
+    right_lines = [
+        "Commands",
+        "─────────────",
+        "/add <path>    Add file/dir as context",
+        "/tree          Add directory tree",
+        "/run <cmd>     Run shell → context",
+        "/search <q>    Web search → context",
+        "/compact       Compact history",
+        "/help          All commands",
+        "",
+        "Keys",
+        "─────────────",
+        "Tab            Complete slash commands",
+        "Alt+Enter      Insert newline",
+        "↑↓             Browse history",
+        "Ctrl-D         Exit",
+    ]
+
+    row_count = max(len(left_lines), len(right_lines))
+    reset = "\033[0m"
+    purple = "\033[38;2;139;92;246m"
+    cyan = "\033[36m"
+    dim = "\033[2m"
+    bold = "\033[1m"
+    title = f" Lumode v{LUMODE_VERSION} "
+    left_rule = (outer_width - len(title)) // 2
+    right_rule = outer_width - len(title) - left_rule
+
+    output.write("\n")
+    output.write(f"{purple}╭{'─' * left_rule}{bold}{title}{reset}{purple}{'─' * right_rule}╮{reset}\n")
+    for index in range(row_count):
+        left = left_lines[index] if index < len(left_lines) else ""
+        right = right_lines[index] if index < len(right_lines) else ""
+        if "\033_G" in left:
+            visible_left = len(image_pad) + image_cols
+            left_cell = f"{dim}{left}{' ' * max(0, left_width - visible_left)}{reset}"
+        else:
+            left_cell = f"{dim}{left:<{left_width}}{reset}"
+        right_style = cyan if right in {"Commands", "Keys"} or right.startswith("/") or right.startswith(("Tab", "Alt", "↑", "Ctrl")) else dim
+        if right == "─────────────":
+            right_style = cyan
+        line = (
+            f"{purple}│{reset}"
+            f"{left_cell}"
+            f"{' ' * gap}"
+            f"{right_style}{right:<{right_width}}{reset}"
+            f"{purple}│{reset}\n"
+        )
+        output.write(line)
+    output.write(f"{purple}╰{'─' * outer_width}╯{reset}\n\n")
     output.flush()
     return True
 
@@ -1255,7 +1325,8 @@ def _print_welcome(agent: LumodeAgent) -> None:
         print("Type /help for commands.\n")
         return
 
-    image_printed = _print_lumo_cat_image_box()
+    if _print_inline_image_welcome(agent):
+        return
 
     # ── Lumo cat fallback art ─────────────────────────────────────────────────
     P  = "#7c3aed"   # Lumo purple
@@ -1268,35 +1339,30 @@ def _print_welcome(agent: LumodeAgent) -> None:
     def la(s, st=P):
         left.append(s, style=st)
 
-    if not image_printed:
-        la("      /\\_/\\\n", LP)
-        la("   __/     \\__\n", LP)
-        la("  /  ")
-        la("◉", "white bold")
-        la("   ")
-        la("◉", "white bold")
-        la("  \\\n", LP)
-        la(" |     ")
-        la("▾", "#d8b4fe")
-        la("     |\n", LP)
-        la("  \\    ")
-        la("●", B)
-        la("    /\n", P)
-        la("   /|       |\\\n", P)
-        la("  / |       | \\___\n", P)
-        la(" |  |       |     `\\\n", P)
-        la(" |  |       |  /\\   |\n", P)
-        la(" |  |_______| |  |  |\n", DP)
-        la("  \\_________/ /  / /\n", DP)
-        la("    ||   ||  /__/ /\n", DP)
-        la("    ()   ()  `---'\n", DP)
+    la("      /\\_/\\\n", LP)
+    la("   __/     \\__\n", LP)
+    la("  /  ")
+    la("◉", "white bold")
+    la("   ")
+    la("◉", "white bold")
+    la("  \\\n", LP)
+    la(" |     ")
+    la("▾", "#d8b4fe")
+    la("     |\n", LP)
+    la("  \\    ")
+    la("●", B)
+    la("    /\n", P)
+    la("   /|       |\\\n", P)
+    la("  / |       | \\___\n", P)
+    la(" |  |       |     `\\\n", P)
+    la(" |  |       |  /\\   |\n", P)
+    la(" |  |_______| |  |  |\n", DP)
+    la("  \\_________/ /  / /\n", DP)
+    la("    ||   ||  /__/ /\n", DP)
+    la("    ()   ()  `---'\n", DP)
 
     # ── Identity ──────────────────────────────────────────────────────────────
-    cwd_str = str(agent.cwd)
-    if len(cwd_str) > 32:
-        cwd_str = "…" + cwd_str[-31:]
-    branch = _get_git_branch(agent.cwd)
-    session_name = agent.session_name or "(unsaved)"
+    cwd_str, branch, session_name = _plain_welcome_context(agent)
 
     la("\n")
     la("  Lumo-powered coding agent\n", "dim")
