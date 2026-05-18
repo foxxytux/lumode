@@ -9,6 +9,8 @@ import argparse
 import re
 import uuid
 import base64
+import configparser
+import platform
 from pathlib import Path
 from typing import Optional, Generator
 import urllib.parse
@@ -53,6 +55,44 @@ class Colors:
     RESET = '\033[0m'
 
 
+def get_firefox_dir() -> Path:
+    """Return the Firefox profile root for the current OS."""
+    system = platform.system().lower()
+    if system == "darwin":
+        return Path.home() / "Library" / "Application Support" / "Firefox"
+    if system == "linux":
+        return Path.home() / ".mozilla" / "firefox"
+    raise RuntimeError(f"Unsupported OS for Firefox profile lookup: {platform.system()}")
+
+
+def find_firefox_profiles(firefox_dir: Optional[Path] = None) -> list[Path]:
+    """Find Firefox profiles, preferring profiles.ini default entries."""
+    firefox_dir = firefox_dir or get_firefox_dir()
+    profiles_ini = firefox_dir / "profiles.ini"
+    profiles: list[Path] = []
+
+    if profiles_ini.exists():
+        config = configparser.ConfigParser()
+        config.read(profiles_ini)
+        sections = [section for section in config.sections() if section.startswith("Profile")]
+        sections.sort(key=lambda section: config.get(section, "Default", fallback="0") != "1")
+
+        for section in sections:
+            path_value = config.get(section, "Path", fallback=None)
+            if not path_value:
+                continue
+
+            is_relative = config.get(section, "IsRelative", fallback="1") == "1"
+            profile_path = firefox_dir / path_value if is_relative else Path(path_value)
+            if profile_path.exists():
+                profiles.append(profile_path)
+
+    if profiles:
+        return profiles
+
+    return [path for path in firefox_dir.iterdir() if path.is_dir() and (path / "cookies.sqlite").exists()]
+
+
 def extract_firefox_cookies(domain: str = "lumo.proton.me") -> dict:
     """Extract auth cookies from Firefox profile."""
     if os.getenv("LUMO_UID") and os.getenv("LUMO_TOKEN"):
@@ -61,13 +101,13 @@ def extract_firefox_cookies(domain: str = "lumo.proton.me") -> dict:
             "access_token": os.getenv("LUMO_TOKEN"),
         }
 
-    firefox_dir = Path.home() / ".mozilla" / "firefox"
+    firefox_dir = get_firefox_dir()
     if not firefox_dir.exists():
-        raise RuntimeError("Firefox profile not found")
+        raise RuntimeError(f"Firefox profile directory not found at {firefox_dir}")
 
-    profiles = list(firefox_dir.glob("*.default*"))
+    profiles = find_firefox_profiles(firefox_dir)
     if not profiles:
-        raise RuntimeError("No Firefox profiles found")
+        raise RuntimeError(f"No Firefox profiles found in {firefox_dir}")
 
     cookies_db = profiles[-1] / "cookies.sqlite"
     if not cookies_db.exists():

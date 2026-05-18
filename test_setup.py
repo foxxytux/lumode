@@ -3,7 +3,45 @@
 
 import sys
 import os
+import configparser
+import platform
 from pathlib import Path
+
+def get_firefox_dir() -> Path:
+    """Return the Firefox profile root for the current OS."""
+    system = platform.system().lower()
+    if system == "darwin":
+        return Path.home() / "Library" / "Application Support" / "Firefox"
+    if system == "linux":
+        return Path.home() / ".mozilla" / "firefox"
+    raise RuntimeError(f"Unsupported OS for Firefox profile lookup: {platform.system()}")
+
+def find_firefox_profiles(firefox_dir: Path | None = None) -> list[Path]:
+    """Find Firefox profiles, preferring profiles.ini default entries."""
+    firefox_dir = firefox_dir or get_firefox_dir()
+    profiles_ini = firefox_dir / "profiles.ini"
+    profiles: list[Path] = []
+
+    if profiles_ini.exists():
+        config = configparser.ConfigParser()
+        config.read(profiles_ini)
+        sections = [section for section in config.sections() if section.startswith("Profile")]
+        sections.sort(key=lambda section: config.get(section, "Default", fallback="0") != "1")
+
+        for section in sections:
+            path_value = config.get(section, "Path", fallback=None)
+            if not path_value:
+                continue
+
+            is_relative = config.get(section, "IsRelative", fallback="1") == "1"
+            profile_path = firefox_dir / path_value if is_relative else Path(path_value)
+            if profile_path.exists():
+                profiles.append(profile_path)
+
+    if profiles:
+        return profiles
+
+    return [path for path in firefox_dir.iterdir() if path.is_dir() and (path / "cookies.sqlite").exists()]
 
 def test_python_version():
     """Check Python version."""
@@ -32,26 +70,29 @@ def test_dependencies():
 
 def test_firefox_profiles():
     """Check Firefox profile exists."""
-    firefox_dir = Path.home() / ".mozilla" / "firefox"
+    firefox_dir = get_firefox_dir()
 
     if not firefox_dir.exists():
-        print(f"✗ Firefox profile directory not found")
+        print(f"✗ Firefox profile directory not found at {firefox_dir}")
         return False
 
-    profiles = list(firefox_dir.glob("*.default*"))
+    profiles = find_firefox_profiles(firefox_dir)
     if not profiles:
-        print(f"✗ No Firefox profiles found")
+        print(f"✗ No Firefox profiles found in {firefox_dir}")
         return False
 
-    print(f"✓ Firefox profiles found: {len(profiles)}")
+    print(f"✓ Firefox profiles found for {platform.system()}: {len(profiles)}")
     for p in profiles:
         print(f"  - {p.name}")
     return True
 
 def test_cookies_db():
     """Check cookies database."""
-    firefox_dir = Path.home() / ".mozilla" / "firefox"
-    profiles = list(firefox_dir.glob("*.default*"))
+    firefox_dir = get_firefox_dir()
+    if not firefox_dir.exists():
+        return False
+
+    profiles = find_firefox_profiles(firefox_dir)
 
     if not profiles:
         return False
@@ -70,8 +111,12 @@ def test_firefox_session():
     import tempfile
     import shutil
 
-    firefox_dir = Path.home() / ".mozilla" / "firefox"
-    profiles = list(firefox_dir.glob("*.default*"))
+    firefox_dir = get_firefox_dir()
+    if not firefox_dir.exists():
+        print(f"✗ Firefox profile directory not found at {firefox_dir}")
+        return False
+
+    profiles = find_firefox_profiles(firefox_dir)
 
     if not profiles:
         print("✗ No Firefox profiles found")
